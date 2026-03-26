@@ -1,79 +1,63 @@
 <!DOCTYPE html>
 <html lang="it">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no"/>
-  <title>Hackenbush</title>
-  <style>
-    body {
-      margin: 0;
-      font-family: system-ui, -apple-system, sans-serif;
-      background: #f4f4f4;
-      overflow: hidden;
-    }
-
-    #toolbar {
-      position: fixed;
-      top: 0;
-      left: 0;
-      right: 0;
-      background: white;
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-      padding: 10px;
-      z-index: 10;
-      border-bottom: 1px solid #ddd;
-    }
-
-    button, select {
-      padding: 8px 10px;
-      font-size: 16px;
-      border-radius: 10px;
-      border: 1px solid #ccc;
-      background: #fff;
-    }
-
-    button.active {
-      background: #222;
-      color: white;
-      border-color: #222;
-    }
-
-    #status {
-      font-size: 14px;
-      padding: 8px 10px;
-      color: #333;
-      flex: 1;
-      min-width: 200px;
-    }
-
-    canvas {
-      position: absolute;
-      top: 70px;
-      left: 0;
-      right: 0;
-      bottom: 0;
-      touch-action: none;
-      background: #fafafa;
-    }
-  </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Hackenbush iOS</title>
+<style>
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, sans-serif;
+  background: #f4f4f4;
+  overflow: hidden;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+#toolbar {
+  position: fixed;
+  top: 0; left: 0; right: 0;
+  background: white;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px;
+  z-index: 10;
+  border-bottom: 1px solid #ddd;
+}
+button, select, input {
+  padding: 8px 10px;
+  font-size: 16px;
+  border-radius: 10px;
+  border: 1px solid #ccc;
+  background: #fff;
+}
+button.active { background: #222; color: #fff; border-color: #222; }
+#status { font-size: 14px; padding: 8px 10px; color: #333; flex:1; min-width:200px; }
+canvas {
+  position: absolute;
+  top:70px; left:0;
+  width:100%; height:calc(100% - 70px);
+  touch-action: none;
+  background: #fafafa;
+}
+</style>
 </head>
 <body>
 
 <div id="toolbar">
   <button id="modeDraw" class="active">✏️ Disegno</button>
   <button id="modePlay">🎮 Gioco</button>
-
   <select id="colorSelect">
     <option value="red">Rosso</option>
     <option value="blue">Blu</option>
     <option value="green">Verde</option>
   </select>
-
+  <label>Griglia <input type="number" id="gridSize" value="20" min="5" max="100" style="width:60px"></label>
   <button id="undoBtn">↩️ Undo</button>
   <button id="clearBtn">🗑️ Reset</button>
-
+  <button id="saveBtn">💾 Save JSON</button>
+  <button id="loadBtn">📂 Load JSON</button>
+  <input type="file" id="fileInput" style="display:none">
   <div id="status"></div>
 </div>
 
@@ -83,6 +67,13 @@
 const canvas = document.getElementById("canvas");
 const ctx = canvas.getContext("2d");
 
+let mode="draw"; // draw | play
+let currentColor="red";
+let currentPlayer="red";
+let segments=[], history=[], nextId=1;
+let drawing=false, startPoint=null, currentPoint=null;
+let gridSize = 20;
+
 function resize() {
   canvas.width = window.innerWidth;
   canvas.height = window.innerHeight - 70;
@@ -91,315 +82,114 @@ function resize() {
 window.addEventListener("resize", resize);
 resize();
 
-// --- Stato gioco ---
-let mode = "draw"; // draw | play
-let currentColor = "red";
-let currentPlayer = "red"; // player turn in play mode
-
-// Segmenti: {id, x1,y1,x2,y2, color}
-let segments = [];
-let history = [];
-
-let nextId = 1;
-
-const groundY = () => canvas.height - 30;
-
 // --- UI ---
 const modeDrawBtn = document.getElementById("modeDraw");
 const modePlayBtn = document.getElementById("modePlay");
 const colorSelect = document.getElementById("colorSelect");
 const statusDiv = document.getElementById("status");
-
+const gridInput = document.getElementById("gridSize");
 modeDrawBtn.onclick = () => setMode("draw");
 modePlayBtn.onclick = () => setMode("play");
+colorSelect.onchange = ()=>{currentColor=colorSelect.value; updateStatus();}
+gridInput.onchange = ()=>{gridSize=parseInt(gridInput.value)}
+document.getElementById("undoBtn").onclick=undo;
+document.getElementById("clearBtn").onclick=resetAll;
+document.getElementById("saveBtn").onclick=saveJSON;
+document.getElementById("loadBtn").onclick=()=>document.getElementById("fileInput").click();
+document.getElementById("fileInput").addEventListener("change", loadJSON);
 
-colorSelect.onchange = () => {
-  currentColor = colorSelect.value;
-  updateStatus();
-};
-
-document.getElementById("undoBtn").onclick = () => undo();
-document.getElementById("clearBtn").onclick = () => resetAll();
-
-function setMode(m) {
-  mode = m;
-  modeDrawBtn.classList.toggle("active", mode === "draw");
-  modePlayBtn.classList.toggle("active", mode === "play");
-
-  if (mode === "play") {
-    currentPlayer = "red";
-  }
+function setMode(m){
+  mode=m;
+  modeDrawBtn.classList.toggle("active", mode==="draw");
+  modePlayBtn.classList.toggle("active", mode==="play");
+  if(mode==="play") currentPlayer="red";
   updateStatus();
   drawAll();
 }
-
-function updateStatus() {
-  if (mode === "draw") {
-    statusDiv.innerHTML = `Modalità Disegno | Colore: <b style="color:${currentColor}">${currentColor}</b>`;
-  } else {
-    statusDiv.innerHTML = `Modalità Gioco | Turno: <b style="color:${currentPlayer}">${currentPlayer}</b>`;
-  }
+function updateStatus(){
+  if(mode==="draw") statusDiv.innerHTML=`Modalità Disegno | Colore: <b style="color:${currentColor}">${currentColor}</b>`;
+  else statusDiv.innerHTML=`Modalità Gioco | Turno: <b style="color:${currentPlayer}">${currentPlayer}</b>`;
 }
 
-// --- Disegno ---
-function drawGround() {
-  ctx.strokeStyle = "#000";
-  ctx.lineWidth = 4;
-  ctx.beginPath();
-  ctx.moveTo(0, groundY());
-  ctx.lineTo(canvas.width, groundY());
-  ctx.stroke();
-}
-
-function drawSegments() {
-  for (let s of segments) {
-    ctx.strokeStyle = s.color;
-    ctx.lineWidth = 6;
-    ctx.lineCap = "round";
-    ctx.beginPath();
-    ctx.moveTo(s.x1, s.y1);
-    ctx.lineTo(s.x2, s.y2);
-    ctx.stroke();
-  }
-}
-
-function drawAll(highlightId=null) {
+// --- Disegno e Canvas ---
+function groundY(){ return canvas.height - 30; }
+function drawGround(){ ctx.strokeStyle="#000"; ctx.lineWidth=4; ctx.beginPath(); ctx.moveTo(0,groundY()); ctx.lineTo(canvas.width,groundY()); ctx.stroke(); }
+function drawSegments(){ for(let s of segments){ ctx.strokeStyle=s.color; ctx.lineWidth=6; ctx.lineCap="round"; ctx.beginPath(); ctx.moveTo(s.x1,s.y1); ctx.lineTo(s.x2,s.y2); ctx.stroke(); } }
+function drawAll(highlightId=null){
   ctx.clearRect(0,0,canvas.width,canvas.height);
   drawGround();
   drawSegments();
-
-  if (highlightId != null) {
-    let s = segments.find(x => x.id === highlightId);
-    if (s) {
-      ctx.strokeStyle = "gold";
-      ctx.lineWidth = 10;
-      ctx.beginPath();
-      ctx.moveTo(s.x1, s.y1);
-      ctx.lineTo(s.x2, s.y2);
-      ctx.stroke();
-    }
-  }
+  if(highlightId!=null){let s=segments.find(x=>x.id===highlightId); if(s){ctx.strokeStyle="gold"; ctx.lineWidth=10; ctx.beginPath(); ctx.moveTo(s.x1,s.y1); ctx.lineTo(s.x2,s.y2); ctx.stroke();}}
 }
 
-// --- Utilità geometriche ---
-function distPointToSegment(px, py, x1, y1, x2, y2) {
-  const A = px - x1;
-  const B = py - y1;
-  const C = x2 - x1;
-  const D = y2 - y1;
-
-  const dot = A * C + B * D;
-  const lenSq = C * C + D * D;
-  let param = -1;
-  if (lenSq !== 0) param = dot / lenSq;
-
-  let xx, yy;
-  if (param < 0) { xx = x1; yy = y1; }
-  else if (param > 1) { xx = x2; yy = y2; }
-  else { xx = x1 + param * C; yy = y1 + param * D; }
-
-  const dx = px - xx;
-  const dy = py - yy;
-  return Math.sqrt(dx * dx + dy * dy);
-}
-
-function findSegmentNear(x,y, threshold=15) {
-  let best = null;
-  let bestDist = threshold;
-  for (let s of segments) {
-    const d = distPointToSegment(x,y,s.x1,s.y1,s.x2,s.y2);
-    if (d < bestDist) {
-      bestDist = d;
-      best = s;
-    }
+// --- Snap to grid and nodes ---
+function snapPoint(x,y){ 
+  x=Math.round(x/gridSize)*gridSize; 
+  y=Math.round(y/gridSize)*gridSize; 
+  for(let s of segments){
+    if(Math.hypot(x-s.x1,y-s.y1)<18) return {x:s.x1,y:s.y1};
+    if(Math.hypot(x-s.x2,y-s.y2)<18) return {x:s.x2,y:s.y2};
   }
-  return best;
-}
-
-// --- Snap ai nodi ---
-function snapPoint(x,y, radius=18) {
-  for (let s of segments) {
-    let d1 = Math.hypot(x - s.x1, y - s.y1);
-    if (d1 < radius) return {x: s.x1, y: s.y1};
-
-    let d2 = Math.hypot(x - s.x2, y - s.y2);
-    if (d2 < radius) return {x: s.x2, y: s.y2};
-  }
-
-  if (Math.abs(y - groundY()) < radius) return {x, y: groundY()};
-
+  if(Math.abs(y-groundY())<18) return {x,y:groundY()};
   return {x,y};
 }
 
-// --- Modalità Disegno ---
-let drawing = false;
-let startPoint = null;
-let currentPoint = null;
-
-canvas.addEventListener("pointerdown", (e) => {
-  const rect = canvas.getBoundingClientRect();
-  let x = e.clientX - rect.left;
-  let y = e.clientY - rect.top;
-
-  if (mode === "draw") {
-    drawing = true;
-    startPoint = snapPoint(x,y);
-    currentPoint = startPoint;
-  } else if (mode === "play") {
-    let s = findSegmentNear(x,y, 18);
-    if (!s) return;
-
-    if (s.color !== currentPlayer) {
-      alert("Puoi tagliare solo un segmento del tuo colore!");
-      return;
-    }
-
-    saveHistory();
-    cutSegment(s.id);
-    switchTurn();
+// --- Mouse/Touch ---
+canvas.addEventListener("pointerdown", e=>{
+  let x=e.offsetX, y=e.offsetY;
+  if(mode==="draw"){drawing=true; startPoint=currentPoint=snapPoint(x,y);}
+  else if(mode==="play"){
+    let s=findSegmentNear(x,y,18);
+    if(!s) return;
+    if(s.color!=="green" && s.color!==currentPlayer){ alert("Puoi tagliare solo il tuo colore o verde!"); return;}
+    saveHistory(); cutSegment(s.id); switchTurn();
   }
 });
-
-canvas.addEventListener("pointermove", (e) => {
-  if (!drawing) return;
-
-  const rect = canvas.getBoundingClientRect();
-  let x = e.clientX - rect.left;
-  let y = e.clientY - rect.top;
-
-  currentPoint = snapPoint(x,y);
-
-  drawAll();
-  ctx.strokeStyle = currentColor;
-  ctx.lineWidth = 4;
-  ctx.setLineDash([6,6]);
-  ctx.beginPath();
-  ctx.moveTo(startPoint.x, startPoint.y);
-  ctx.lineTo(currentPoint.x, currentPoint.y);
-  ctx.stroke();
-  ctx.setLineDash([]);
+canvas.addEventListener("pointermove", e=>{
+  if(!drawing) return;
+  let x=e.offsetX, y=e.offsetY;
+  currentPoint=snapPoint(x,y);
+  drawAll(); ctx.strokeStyle=currentColor; ctx.lineWidth=4; ctx.setLineDash([6,6]); ctx.beginPath(); ctx.moveTo(startPoint.x,startPoint.y); ctx.lineTo(currentPoint.x,currentPoint.y); ctx.stroke(); ctx.setLineDash([]);
 });
-
-canvas.addEventListener("pointerup", (e) => {
-  if (!drawing) return;
-  drawing = false;
-
-  if (!startPoint || !currentPoint) return;
-
-  let dx = currentPoint.x - startPoint.x;
-  let dy = currentPoint.y - startPoint.y;
-  let len = Math.hypot(dx,dy);
-
-  if (len < 10) {
-    drawAll();
-    return;
-  }
-
+canvas.addEventListener("pointerup", e=>{
+  if(!drawing) return; drawing=false; 
+  if(!startPoint || !currentPoint) return;
+  if(Math.hypot(currentPoint.x-startPoint.x,currentPoint.y-startPoint.y)<10){drawAll(); return;}
   saveHistory();
-
-  segments.push({
-    id: nextId++,
-    x1: startPoint.x,
-    y1: startPoint.y,
-    x2: currentPoint.x,
-    y2: currentPoint.y,
-    color: currentColor
-  });
-
-  startPoint = null;
-  currentPoint = null;
-
-  drawAll();
+  segments.push({id:nextId++,x1:startPoint.x,y1:startPoint.y,x2:currentPoint.x,y2:currentPoint.y,color:currentColor});
+  startPoint=currentPoint=null; drawAll();
 });
+
+// --- Find segment ---
+function distPointToSegment(px,py,x1,y1,x2,y2){ const A=px-x1,B=py-y1,C=x2-x1,D=y2-y1; const dot=A*C+B*D; const lenSq=C*C+D*D; let param=-1; if(lenSq!==0) param=dot/lenSq; let xx,yy; if(param<0){xx=x1;yy=y1;} else if(param>1){xx=x2;yy=y2;} else {xx=x1+param*C; yy=y1+param*D;} const dx=px-xx,dy=py-yy; return Math.sqrt(dx*dx+dy*dy);}
+function findSegmentNear(x,y,threshold=15){ let best=null,bestDist=threshold; for(let s of segments){ const d=distPointToSegment(x,y,s.x1,s.y1,s.x2,s.y2); if(d<bestDist){bestDist=d; best=s;} } return best; }
 
 // --- Undo/Reset ---
-function saveHistory() {
-  history.push(JSON.stringify(segments));
-  if (history.length > 50) history.shift();
-}
+function saveHistory(){ history.push(JSON.stringify(segments)); if(history.length>50) history.shift(); }
+function undo(){ if(history.length===0) return; segments=JSON.parse(history.pop()); drawAll(); }
+function resetAll(){ if(!confirm("Vuoi cancellare tutto?")) return; segments=[]; history=[]; nextId=1; setMode("draw"); drawAll(); }
 
-function undo() {
-  if (history.length === 0) return;
-  segments = JSON.parse(history.pop());
-  drawAll();
-}
-
-function resetAll() {
-  if (!confirm("Vuoi cancellare tutto?")) return;
-  segments = [];
-  history = [];
-  nextId = 1;
-  setMode("draw");
-  drawAll();
-}
+// --- Save/Load JSON ---
+function saveJSON(){ const blob=new Blob([JSON.stringify(segments,null,2)],{type:"application/json"}); const url=URL.createObjectURL(blob); const a=document.createElement("a"); a.href=url; a.download="hackenbush.json"; a.click(); URL.revokeObjectURL(url); }
+function loadJSON(e){ const file=e.target.files[0]; if(!file) return; const reader=new FileReader(); reader.onload=function(ev){ try{segments=JSON.parse(ev.target.result); nextId=segments.length>0?Math.max(...segments.map(s=>s.id))+1:1; drawAll(); }catch(err){alert("JSON non valido")}}; reader.readAsText(file); }
 
 // --- Turni ---
-function switchTurn() {
-  if (currentPlayer === "red") currentPlayer = "blue";
-  else currentPlayer = "red";
-  updateStatus();
+function switchTurn(){ currentPlayer=(currentPlayer==="red")?"blue":"red"; updateStatus(); }
+
+// --- Hackenbush logic ---
+function cutSegment(id){ segments=segments.filter(s=>s.id!==id); removeDisconnected(); drawAll();}
+function removeDisconnected(){
+  function key(x,y){return `${Math.round(x)}:${Math.round(y)}`;}
+  let adjacency=new Map();
+  function addAdj(a,b){ if(!adjacency.has(a)) adjacency.set(a,[]); adjacency.get(a).push(b);}
+  for(let s of segments){ let a=key(s.x1,s.y1),b=key(s.x2,s.y2); addAdj(a,b); addAdj(b,a);}
+  let groundNodes=new Set(); for(let s of segments){ if(Math.abs(s.y1-groundY())<2) groundNodes.add(key(s.x1,s.y1)); if(Math.abs(s.y2-groundY())<2) groundNodes.add(key(s.x2,s.y2));}
+  let visited=new Set(),queue=[...groundNodes]; for(let g of groundNodes) visited.add(g);
+  while(queue.length>0){ let n=queue.shift(); let neigh=adjacency.get(n)||[]; for(let m of neigh) if(!visited.has(m)){visited.add(m);queue.push(m);}}
+  segments=segments.filter(s=>visited.has(key(s.x1,s.y1)) && visited.has(key(s.x2,s.y2)));
 }
 
-// --- Hackenbush: taglio e rimozione pezzi scollegati ---
-function cutSegment(id) {
-  segments = segments.filter(s => s.id !== id);
-  removeDisconnected();
-  drawAll();
-}
-
-function removeDisconnected() {
-  function key(x,y) {
-    return `${Math.round(x)}:${Math.round(y)}`;
-  }
-
-  let adjacency = new Map();
-
-  function addAdj(a,b) {
-    if (!adjacency.has(a)) adjacency.set(a, []);
-    adjacency.get(a).push(b);
-  }
-
-  for (let s of segments) {
-    let a = key(s.x1,s.y1);
-    let b = key(s.x2,s.y2);
-    addAdj(a,b);
-    addAdj(b,a);
-  }
-
-  let groundNodes = new Set();
-  for (let s of segments) {
-    if (Math.abs(s.y1 - groundY()) < 2) groundNodes.add(key(s.x1,s.y1));
-    if (Math.abs(s.y2 - groundY()) < 2) groundNodes.add(key(s.x2,s.y2));
-  }
-
-  let visited = new Set();
-  let queue = [];
-
-  for (let g of groundNodes) {
-    visited.add(g);
-    queue.push(g);
-  }
-
-  while (queue.length > 0) {
-    let n = queue.shift();
-    let neigh = adjacency.get(n) || [];
-    for (let m of neigh) {
-      if (!visited.has(m)) {
-        visited.add(m);
-        queue.push(m);
-      }
-    }
-  }
-
-  segments = segments.filter(s => {
-    let a = key(s.x1,s.y1);
-    let b = key(s.x2,s.y2);
-    return visited.has(a) && visited.has(b);
-  });
-}
-
-updateStatus();
-drawAll();
+updateStatus(); drawAll();
 </script>
 
 </body>
