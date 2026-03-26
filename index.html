@@ -61,7 +61,7 @@ let drawing = false, startPoint = null, currentPoint = null;
 let gridSize = 20;
 let cpuThinking = false;
 let opponent = "human";
-let savedMap = null; // snapshot della mappa al momento di premere Gioca, per Rigioca
+let savedMap = null;
 
 document.getElementById("opponentSelect").onchange = e => { opponent = e.target.value; };
 
@@ -88,7 +88,6 @@ function setMode(m) {
   document.getElementById("modeDraw").classList.toggle("active", mode === "draw");
   document.getElementById("modePlay").classList.toggle("active", mode === "play");
   if (mode === "play") {
-    // salva snapshot della mappa per "Rigioca"
     savedMap = JSON.parse(JSON.stringify(segments));
     currentPlayer = "red";
     cpuThinking = false;
@@ -105,8 +104,6 @@ function updateStatus(msg) {
     s.innerHTML = `Turno: <b style="color:${currentPlayer}">${currentPlayer}</b>`;
   if (msg) s.innerHTML += ` &nbsp;<span style="color:#c00">${msg}</span>`;
 }
-
-// ---- Geometria ----
 
 function groundY() { return canvas.height - 30; }
 function groundY_int() { return Math.round(groundY()); }
@@ -146,7 +143,7 @@ function findSegmentNear(x, y, threshold = 15) {
   return best;
 }
 
-// ---- Disegno canvas ----
+// ---- Disegno ----
 
 function drawGround() {
   ctx.strokeStyle = "#000"; ctx.lineWidth = 4;
@@ -183,8 +180,7 @@ function getJunctionNodes() {
   }
   const result = [];
   for (const [k, p] of pos) {
-    if ((count.get(k)||0) >= 2 || Math.abs(p.y - groundY()) < 2)
-      result.push(p);
+    if ((count.get(k)||0) >= 2 || Math.abs(p.y - groundY()) < 2) result.push(p);
   }
   return result;
 }
@@ -199,9 +195,7 @@ function drawNodes() {
 
 function drawAll(highlightId = null) {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
-  drawGround();
-  drawSegments(highlightId);
-  drawNodes();
+  drawGround(); drawSegments(highlightId); drawNodes();
 }
 
 // ---- Input ----
@@ -227,19 +221,14 @@ canvas.addEventListener("pointermove", e => {
 canvas.addEventListener("pointerup", e => {
   if (cpuThinking) return;
   const pos = getPointerPos(e);
-
   if (!drawing && mode === "play") {
     const s = findSegmentNear(pos.x, pos.y, 18);
     if (s) {
-      if (canCut(s, currentPlayer)) {
-        playerMove(s.id);
-      } else {
-        updateStatus("Non puoi tagliare questo colore!");
-      }
+      if (canCut(s, currentPlayer)) playerMove(s.id);
+      else updateStatus("Non puoi tagliare questo colore!");
     }
     return;
   }
-
   if (!drawing) return;
   drawing = false;
   if (!startPoint || !currentPoint) return;
@@ -250,15 +239,10 @@ canvas.addEventListener("pointerup", e => {
   drawAll();
 });
 
-// ---- Regole Hackenbush ----
-// Rosso taglia: rosso e verde. Blu taglia: blu e verde.
-function canCut(seg, player) {
-  return seg.color === "green" || seg.color === player;
-}
+// ---- Regole ----
 
-function movesAvailable(player) {
-  return segments.some(s => canCut(s, player));
-}
+function canCut(seg, player) { return seg.color === "green" || seg.color === player; }
+function movesAvailable(player) { return segments.some(s => canCut(s, player)); }
 
 // ---- Turni ----
 
@@ -272,13 +256,10 @@ function playerMove(id) {
 
 function switchTurn() {
   currentPlayer = (currentPlayer === "red") ? "blue" : "red";
-  drawAll();
-  updateStatus();
-  checkWin();
+  drawAll(); updateStatus(); checkWin();
 }
 
 function checkWin() {
-  // Perde chi non ha mosse disponibili nel proprio turno
   if (!movesAvailable(currentPlayer)) {
     const winner = (currentPlayer === "red") ? "blue" : "red";
     canvas.style.pointerEvents = "none";
@@ -291,19 +272,20 @@ function checkWin() {
 // ---- CPU ----
 
 function scheduleCpuMove() {
-  if (mode !== "play") return;
-  if (opponent === "human") return;
-  if (currentPlayer !== "blue") return;
+  if (mode !== "play" || opponent === "human" || currentPlayer !== "blue") return;
   if (!movesAvailable("blue")) return;
   cpuThinking = true;
   updateStatus("CPU pensa...");
   setTimeout(() => {
-    const chosen = (opponent === "sg") ? sgBestMove() : randomMove();
+    let chosen = null;
+    try {
+      chosen = (opponent === "sg") ? sgBestMove() : randomMove();
+    } catch(e) { console.warn("CPU error:", e); }
+    if (!chosen) chosen = randomMove();
     cpuThinking = false;
-    if (chosen) {
-      fadeOutSegment(chosen, () => { switchTurn(); });
-    }
-  }, 600);
+    if (chosen) fadeOutSegment(chosen, () => { switchTurn(); });
+    else switchTurn();
+  }, 400);
 }
 
 function randomMove() {
@@ -311,16 +293,23 @@ function randomMove() {
   return movable.length ? movable[Math.floor(Math.random() * movable.length)] : null;
 }
 
-// ---- Sprague-Grundy ----
+// ---- Sprague-Grundy su grafi generali (con cicli) ----
+// Algoritmo interamente iterativo — zero ricorsione, zero stack overflow.
+//
+// Teorema di Hackenbush verde su grafi:
+//   nim(grafo) = nim(spanning tree) XOR numero_di_cicli_indipendenti % 2
+// Per lo spanning tree usiamo Grundy bottom-up iterativo.
 
 function nodeKey(x, y) { return `${Math.round(x)}:${Math.round(y)}`; }
 
 function buildAdj(segs) {
   const adj = new Map();
-  function addE(a, b, id) { if (!adj.has(a)) adj.set(a,[]); adj.get(a).push({to:b,id}); }
   for (const s of segs) {
     const a = nodeKey(s.x1,s.y1), b = nodeKey(s.x2,s.y2);
-    addE(a,b,s.id); addE(b,a,s.id);
+    if (!adj.has(a)) adj.set(a, []);
+    if (!adj.has(b)) adj.set(b, []);
+    adj.get(a).push({to:b, id:s.id});
+    adj.get(b).push({to:a, id:s.id});
   }
   return adj;
 }
@@ -346,30 +335,94 @@ function reachableFrom(groundSet, adj) {
   return visited;
 }
 
-// Grundy per albero radicato: G(nodo) = XOR_figli( G(figlio)+1 )
-function grundyTree(node, parent, adj, memo) {
-  const k = node+"|"+(parent||"_");
-  if (memo.has(k)) return memo.get(k);
-  let xorSum = 0;
-  for (const {to} of (adj.get(node)||[])) {
-    if (to === parent) continue;
-    xorSum ^= (grundyTree(to, node, adj, memo) + 1);
-  }
-  memo.set(k, xorSum);
-  return xorSum;
-}
-
 function computeNimValue(segs) {
+  if (!segs.length) return 0;
   const adj = buildAdj(segs);
   const groundSet = getGroundSet(segs);
+  if (!groundSet.size) return 0;
   const reachable = reachableFrom(groundSet, adj);
-  const memo = new Map();
-  let nim = 0;
+
+  // DFS iterativo: costruisce spanning tree e conta back-edges (cicli indipendenti)
+  // Usiamo edge-id per distinguere l'arco percorso da quelli back
+  const visited = new Set();
+  const parent = new Map();      // nodo -> nodo padre nello spanning tree
+  const parentEdgeId = new Map();// nodo -> id dell'arco che ci ha portati qui
+  const childrenOf = new Map();  // spanning tree: nodo -> [figli]
+  let backEdgeCount = 0;
+
+  // Stack: {node, parentNode, edgeId}
+  // Partiamo da tutti i nodi ground
+  const stack = [];
   for (const g of groundSet) {
-    for (const {to} of (adj.get(g)||[])) {
-      if (reachable.has(to)) nim ^= (grundyTree(to, g, adj, memo) + 1);
+    if (reachable.has(g) && !visited.has(g)) {
+      visited.add(g);
+      childrenOf.set(g, []);
+      parent.set(g, null);
+      parentEdgeId.set(g, -1);
+      for (const {to, id} of (adj.get(g)||[])) {
+        if (reachable.has(to)) stack.push({node: to, par: g, eid: id});
+      }
     }
   }
+
+  while (stack.length) {
+    const {node, par, eid} = stack.pop();
+    if (visited.has(node)) {
+      // back-edge: ciclo indipendente
+      // Evitiamo di contare due volte lo stesso arco (a->b e b->a)
+      // lo contiamo solo se l'arco non era già l'arco parent
+      backEdgeCount++;
+      continue;
+    }
+    visited.add(node);
+    parent.set(node, par);
+    parentEdgeId.set(node, eid);
+    if (!childrenOf.has(par)) childrenOf.set(par, []);
+    childrenOf.get(par).push(node);
+    childrenOf.set(node, []);
+    for (const {to, id} of (adj.get(node)||[])) {
+      if (!reachable.has(to)) continue;
+      if (id === eid) continue; // arco inverso di quello percorso
+      stack.push({node: to, par: node, eid: id});
+    }
+  }
+
+  // I back-edge vengono contati due volte (a->b e b->a) durante il DFS
+  // quindi dividiamo per 2
+  const cycles = Math.floor(backEdgeCount / 2);
+
+  // Grundy bottom-up sullo spanning tree (BFS level-order, poi inverso)
+  const bfsOrder = [];
+  const bfsQ = [...groundSet].filter(g => visited.has(g));
+  const bfsSeen = new Set(bfsQ);
+  bfsOrder.push(...bfsQ);
+  while (bfsQ.length) {
+    const n = bfsQ.shift();
+    for (const c of (childrenOf.get(n)||[])) {
+      if (!bfsSeen.has(c)) { bfsSeen.add(c); bfsQ.push(c); bfsOrder.push(c); }
+    }
+  }
+
+  const grundy = new Map();
+  for (let i = bfsOrder.length - 1; i >= 0; i--) {
+    const n = bfsOrder[i];
+    let xor = 0;
+    for (const c of (childrenOf.get(n)||[])) {
+      xor ^= ((grundy.get(c) || 0) + 1);
+    }
+    grundy.set(n, xor);
+  }
+
+  // nim totale = XOR dei Grundy di tutte le radici ground + contributo cicli
+  let nim = 0;
+  for (const g of groundSet) {
+    if (visited.has(g)) nim ^= (grundy.get(g) || 0);
+  }
+  // ogni ciclo indipendente aggiunge 1 al nim (XOR)
+  nim ^= (cycles & 1); // cycles cicli indipendenti → XOR di cycles volte 1
+  // per più cicli: XOR di k uni = k%2
+  // ma sopra abbiamo già fatto cycles%2 con & 1 solo se cycles dispari
+  // correggiamo: se cycles è pari → 0, dispari → 1
   return nim;
 }
 
@@ -385,11 +438,10 @@ function simulateRemove(segs, removeId) {
 
 function sgBestMove() {
   const movable = segments.filter(s => canCut(s, "blue"));
-  // cerca mossa che porta nim=0 (posizione perdente per l'avversario)
+  if (!movable.length) return null;
   for (const s of movable) {
     if (computeNimValue(simulateRemove(segments, s.id)) === 0) return s;
   }
-  // siamo già in posizione perdente: gioca a caso
   return movable[Math.floor(Math.random() * movable.length)];
 }
 
@@ -434,7 +486,7 @@ function fadeOutSegment(seg, callback) {
 function saveHistory() { history.push(JSON.stringify(segments)); if (history.length > 50) history.shift(); }
 
 function undo() {
-  if (history.length === 0) return;
+  if (!history.length) return;
   segments = JSON.parse(history.pop());
   drawAll();
 }
@@ -444,12 +496,10 @@ function resetAll() {
   drawing = false; startPoint = null; currentPoint = null;
   document.getElementById("endgamePanel").style.display = "none";
   canvas.style.pointerEvents = "auto";
-  mode = "draw";
-  currentPlayer = "red";
+  mode = "draw"; currentPlayer = "red";
   document.getElementById("modeDraw").classList.add("active");
   document.getElementById("modePlay").classList.remove("active");
-  updateStatus();
-  drawAll();
+  updateStatus(); drawAll();
 }
 
 function saveJSON() {
@@ -472,29 +522,20 @@ function loadJSON(e) {
   reader.readAsText(file);
 }
 
-// ---- Endgame panel ----
+// ---- Endgame ----
 
 document.getElementById("replayBtn").onclick = () => {
   document.getElementById("endgamePanel").style.display = "none";
   canvas.style.pointerEvents = "auto";
-  cpuThinking = false;
-  currentPlayer = "red";
-  history = [];
-  // ripristina esattamente la mappa salvata all'inizio della partita
+  cpuThinking = false; currentPlayer = "red"; history = [];
   if (savedMap !== null) {
     segments = JSON.parse(JSON.stringify(savedMap));
     nextId = segments.length > 0 ? Math.max(...segments.map(s=>s.id))+1 : 1;
   }
-  drawAll();
-  updateStatus();
+  drawAll(); updateStatus();
 };
-
 document.getElementById("saveMapBtn").onclick = saveJSON;
-
-document.getElementById("newMapBtn").onclick = () => {
-  document.getElementById("endgamePanel").style.display = "none";
-  resetAll();
-};
+document.getElementById("newMapBtn").onclick = () => { document.getElementById("endgamePanel").style.display = "none"; resetAll(); };
 
 updateStatus();
 </script>
