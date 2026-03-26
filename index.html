@@ -3,23 +3,18 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-<title>Hackenbush iOS</title>
+<title>Hackenbush</title>
 <style>
-body {margin:0;font-family:system-ui,sans-serif;background:#f4f4f4;overflow:hidden;-webkit-user-select:none;-webkit-touch-callout:none;}
-#toolbar{position:fixed;top:0;left:0;right:0;background:white;display:flex;flex-wrap:wrap;gap:8px;padding:10px;z-index:10;border-bottom:1px solid #ddd;}
-button,select,input{padding:8px 10px;font-size:16px;border-radius:10px;border:1px solid #ccc;background:#fff;cursor:pointer;}
-button.active{background:#222;color:#fff;border-color:#222;}
-#status{font-size:14px;padding:8px 10px;color:#333;flex:1;min-width:200px;}
-canvas{position:absolute;top:70px;left:0;width:100%;height:calc(100% - 70px);touch-action:none;-webkit-user-select:none;-webkit-touch-callout:none;background:#fafafa;}
-#endgameOverlay{display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.6);z-index:50;backdrop-filter:blur(2px);}
-#endgamePanel{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%) scale(0.7);background:white;border-radius:12px;padding:30px 20px;text-align:center;box-shadow:0 0 20px rgba(0,0,0,0.4);transition:transform 0.3s ease, opacity 0.3s ease;opacity:0;}
-#endgamePanel.show{transform:translate(-50%,-50%) scale(1);opacity:1;}
-#endgamePanel h2{margin-bottom:20px;color:#222;}
-#endgamePanel button{margin:5px;padding:10px 18px;font-size:16px;border-radius:8px;border:none;transition:all 0.2s;cursor:pointer;}
-#endgamePanel button:hover{transform:scale(1.05);}
-#replayBtn{background:#4CAF50;color:white;}
-#saveMapBtn{background:#2196F3;color:white;}
-#newMapBtn{background:#f44336;color:white;}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:system-ui,-apple-system,sans-serif;background:#f4f4f4;overflow:hidden;-webkit-user-select:none;height:100vh;display:flex;flex-direction:column}
+#toolbar{background:white;display:flex;flex-wrap:wrap;gap:6px;padding:8px;border-bottom:1px solid #ddd;flex-shrink:0}
+button,select,input[type=number]{padding:6px 10px;font-size:14px;border-radius:8px;border:1px solid #ccc;background:#fff;cursor:pointer}
+button.active{background:#222;color:#fff;border-color:#222}
+#status{font-size:13px;padding:6px 10px;color:#333;flex:1;min-width:160px;display:flex;align-items:center}
+canvas{flex:1;width:100%;touch-action:none;background:#fafafa}
+#endgamePanel{display:none;position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:white;border:2px solid #222;border-radius:12px;padding:24px;z-index:20;text-align:center;box-shadow:0 0 20px rgba(0,0,0,.3);min-width:220px}
+#endgameMessage{margin-bottom:16px;font-weight:bold;font-size:20px}
+.ep-btn{margin:5px;padding:8px 16px;font-size:14px;border-radius:8px;border:1px solid #ccc;background:#fff;cursor:pointer}
 </style>
 </head>
 <body>
@@ -31,84 +26,476 @@ canvas{position:absolute;top:70px;left:0;width:100%;height:calc(100% - 70px);tou
     <option value="blue">Blu</option>
     <option value="green">Verde</option>
   </select>
-  <label>Griglia <input type="number" id="gridSize" value="20" min="5" max="100" style="width:60px"></label>
+  <label style="font-size:13px;display:flex;align-items:center;gap:4px">
+    Griglia<input type="number" id="gridSize" value="20" min="5" max="100" style="width:50px">
+  </label>
+  <select id="opponentSelect">
+    <option value="human">vs Umano</option>
+    <option value="random">vs CPU Casuale</option>
+    <option value="sg">vs CPU Sprague-Grundy</option>
+  </select>
   <button id="undoBtn">↩️ Undo</button>
   <button id="clearBtn">🗑️ Reset</button>
-  <button id="saveBtn">💾 Save JSON</button>
-  <button id="loadBtn">📂 Load JSON</button>
+  <button id="saveBtn">💾 Save</button>
+  <button id="loadBtn">📂 Load</button>
   <input type="file" id="fileInput" style="display:none">
-  <button id="toggleAI">🤖 Giocatore Computer: OFF</button>
-  <select id="aiModeSelect" style="margin-left:10px">
-    <option value="random">AI Casuale</option>
-    <option value="grundy">AI Strategica (Grundy)</option>
-  </select>
   <div id="status"></div>
 </div>
-
 <canvas id="canvas"></canvas>
-
-<div id="endgameOverlay">
-  <div id="endgamePanel">
-    <h2 id="endgameMessage"></h2>
-    <button id="replayBtn">🎮 Rigioca</button>
-    <button id="saveMapBtn">💾 Salva mappa</button>
-    <button id="newMapBtn">🗑️ Nuova partita</button>
-  </div>
+<div id="endgamePanel">
+  <div id="endgameMessage"></div>
+  <button class="ep-btn" id="replayBtn">🎮 Rigioca</button>
+  <button class="ep-btn" id="saveMapBtn">💾 Salva mappa</button>
+  <button class="ep-btn" id="newMapBtn">🗑️ Nuova partita</button>
 </div>
 
 <script>
-const canvas = document.getElementById("canvas"), ctx = canvas.getContext("2d");
-let mode="draw",currentColor="red",currentPlayer="red";
-let segments=[],history=[],nextId=1,drawing=false,startPoint=null,currentPoint=null,gridSize=20;
-let aiEnabled=false,aiMode="random";
+const canvas = document.getElementById("canvas");
+const ctx = canvas.getContext("2d");
 
-function resize(){canvas.width=window.innerWidth;canvas.height=window.innerHeight-70;drawAll();}
-window.addEventListener("resize",resize);
-resize();
+let mode = "draw";
+let currentColor = "red";
+let currentPlayer = "red";
+let segments = [], history = [], nextId = 1;
+let drawing = false, startPoint = null, currentPoint = null;
+let gridSize = 20;
+let cpuThinking = false;
+let opponent = "human";
+let savedMap = null; // snapshot della mappa al momento di premere Gioca, per Rigioca
 
-const modeDrawBtn=document.getElementById("modeDraw"),modePlayBtn=document.getElementById("modePlay");
-const colorSelect=document.getElementById("colorSelect"),statusDiv=document.getElementById("status");
-const gridInput=document.getElementById("gridSize");
-modeDrawBtn.onclick=()=>setMode("draw");
-modePlayBtn.onclick=()=>setMode("play");
-colorSelect.onchange=()=>{currentColor=colorSelect.value; updateStatus();}
-gridInput.onchange=()=>{gridSize=parseInt(gridInput.value);}
-document.getElementById("undoBtn").onclick=undo;
-document.getElementById("clearBtn").onclick=resetAll;
-document.getElementById("saveBtn").onclick=saveJSON;
-document.getElementById("loadBtn").onclick=()=>document.getElementById("fileInput").click();
-document.getElementById("fileInput").addEventListener("change",loadJSON);
+document.getElementById("opponentSelect").onchange = e => { opponent = e.target.value; };
 
-const toggleAIBtn=document.getElementById("toggleAI"),aiSelect=document.getElementById("aiModeSelect");
-toggleAIBtn.onclick=()=>{aiEnabled=!aiEnabled;toggleAIBtn.textContent=aiEnabled?"🤖 Giocatore Computer: ON":"🤖 Giocatore Computer: OFF";if(aiEnabled && currentPlayer==="blue" && mode==="play") setTimeout(aiMove,200);}
-aiSelect.onchange=()=>{aiMode=aiSelect.value;};
+function resize() {
+  canvas.width = canvas.offsetWidth;
+  canvas.height = canvas.offsetHeight;
+  drawAll();
+}
+window.addEventListener("resize", () => setTimeout(resize, 50));
+window.addEventListener("load", () => setTimeout(resize, 100));
 
-function groundY(){return canvas.height-30;}
-function drawGround(){ctx.strokeStyle="#000";ctx.lineWidth=4;ctx.beginPath();ctx.moveTo(0,groundY());ctx.lineTo(canvas.width,groundY());ctx.stroke();}
-function drawSegments(){for(let s of segments){ctx.strokeStyle=s.color;ctx.lineWidth=6;ctx.lineCap="round";ctx.beginPath();ctx.moveTo(s.x1,s.y1);ctx.lineTo(s.x2,s.y2);ctx.stroke();}}
-function drawNodes(){const nodes=new Map();for(let s of segments){nodes.set(`${s.x1}:${s.y1}`,{x:s.x1,y:s.y1});nodes.set(`${s.x2}:${s.y2}`,{x:s.x2,y:s.y2});}ctx.fillStyle="white";ctx.strokeStyle="#000";ctx.lineWidth=1;nodes.forEach(n=>{ctx.beginPath();ctx.arc(n.x,n.y,4,0,2*Math.PI);ctx.fill();ctx.stroke();});}
-function drawAll(){ctx.clearRect(0,0,canvas.width,canvas.height);drawGround();drawSegments();drawNodes();}
+document.getElementById("modeDraw").onclick = () => setMode("draw");
+document.getElementById("modePlay").onclick  = () => setMode("play");
+document.getElementById("colorSelect").onchange = e => { currentColor = e.target.value; updateStatus(); };
+document.getElementById("gridSize").onchange   = e => { gridSize = parseInt(e.target.value); };
+document.getElementById("undoBtn").onclick  = undo;
+document.getElementById("clearBtn").onclick = resetAll;
+document.getElementById("saveBtn").onclick  = saveJSON;
+document.getElementById("loadBtn").onclick  = () => document.getElementById("fileInput").click();
+document.getElementById("fileInput").addEventListener("change", loadJSON);
 
-function snapPoint(x,y){x=Math.round(x/gridSize)*gridSize;y=Math.round(y/gridSize)*gridSize;for(let s of segments){if(Math.hypot(x-s.x1,y-s.y1)<18)return {x:s.x1,y:s.y1};if(Math.hypot(x-s.x2,y-s.y2)<18)return {x:s.x2,y:s.y2};}if(Math.abs(y-groundY())<18)return {x,y:groundY()};return {x,y};}
-function getPointerPos(e){const r=canvas.getBoundingClientRect();return {x:e.clientX-r.left,y:e.clientY-r.top};}
+function setMode(m) {
+  mode = m;
+  document.getElementById("modeDraw").classList.toggle("active", mode === "draw");
+  document.getElementById("modePlay").classList.toggle("active", mode === "play");
+  if (mode === "play") {
+    // salva snapshot della mappa per "Rigioca"
+    savedMap = JSON.parse(JSON.stringify(segments));
+    currentPlayer = "red";
+    cpuThinking = false;
+  }
+  updateStatus();
+  drawAll();
+}
 
-canvas.addEventListener("pointerdown",e=>{let p=getPointerPos(e);if(mode==="draw"){drawing=true;startPoint=currentPoint=snapPoint(p.x,p.y);}});
-canvas.addEventListener("pointermove",e=>{if(!drawing)return;let p=getPointerPos(e);currentPoint=snapPoint(p.x,p.y);drawAll();ctx.strokeStyle=currentColor;ctx.lineWidth=4;ctx.setLineDash([6,6]);ctx.beginPath();ctx.moveTo(startPoint.x,startPoint.y);ctx.lineTo(currentPoint.x,currentPoint.y);ctx.stroke();ctx.setLineDash([]);});
-canvas.addEventListener("pointerup",e=>{
-  let p=getPointerPos(e);
-  if(mode==="draw"){if(!drawing)return;drawing=false;if(!startPoint||!currentPoint)return;if(Math.hypot(currentPoint.x-startPoint.x,currentPoint.y-startPoint.y)<10){drawAll();return;}saveHistory();segments.push({id:nextId++,x1:startPoint.x,y1:startPoint.y,x2:currentPoint.x,y2:currentPoint.y,color:currentColor});startPoint=currentPoint=null;drawAll();}});
-  
-function saveHistory(){history.push(JSON.stringify(segments));if(history.length>50)history.shift();}
-function undo(){if(history.length===0)return;segments=JSON.parse(history.pop());drawAll();}
-function resetAll(){segments=[];history=[];nextId=1;setMode("draw");canvas.style.pointerEvents="auto";drawAll();}
-function saveJSON(){const blob=new Blob([JSON.stringify(segments,null,2)],{type:"application/json"});const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.download="hackenbush.json";a.click();URL.revokeObjectURL(url);}
-function loadJSON(e){const f=e.target.files[0];if(!f)return;const r=new FileReader();r.onload=ev=>{try{segments=JSON.parse(ev.target.result);nextId=segments.length?Math.max(...segments.map(s=>s.id))+1:1;drawAll();}catch(err){updateStatus("JSON non valido");}};r.readAsText(f);}
+function updateStatus(msg) {
+  const s = document.getElementById("status");
+  if (mode === "draw")
+    s.innerHTML = `Disegno | Colore: <b style="color:${currentColor}">${currentColor}</b>`;
+  else
+    s.innerHTML = `Turno: <b style="color:${currentPlayer}">${currentPlayer}</b>`;
+  if (msg) s.innerHTML += ` &nbsp;<span style="color:#c00">${msg}</span>`;
+}
 
-function setMode(m){if(m==="play"){const hasGround=segments.some(s=>Math.abs(s.y1-groundY())<2||Math.abs(s.y2-groundY())<2);if(!hasGround){updateStatus("Devi disegnare almeno un segmento collegato al terreno!");return;}currentPlayer="red";}mode=m;modeDrawBtn.classList.toggle("active",mode==="draw");modePlayBtn.classList.toggle("active",mode==="play");updateStatus();drawAll();}
+// ---- Geometria ----
 
-function updateStatus(msg){if(mode==="draw") statusDiv.innerHTML=`Modalità Disegno | Colore: <b style="color:${currentColor}">${currentColor}</b>`;else statusDiv.innerHTML=`Modalità Gioco | Turno: <b style="color:${currentPlayer}">${currentPlayer}</b>`;if(msg) statusDiv.innerHTML+=`<br><span style="color:red">${msg}</span>`;}
+function groundY() { return canvas.height - 30; }
+function groundY_int() { return Math.round(groundY()); }
 
-drawAll();
+function snapPoint(x, y) {
+  x = Math.round(x / gridSize) * gridSize;
+  y = Math.round(y / gridSize) * gridSize;
+  for (const s of segments) {
+    if (Math.hypot(x - s.x1, y - s.y1) < 18) return { x: s.x1, y: s.y1 };
+    if (Math.hypot(x - s.x2, y - s.y2) < 18) return { x: s.x2, y: s.y2 };
+  }
+  if (Math.abs(y - groundY()) < 18) return { x, y: groundY() };
+  return { x, y };
+}
+
+function getPointerPos(e) {
+  const rect = canvas.getBoundingClientRect();
+  return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+}
+
+function distPointToSegment(px, py, x1, y1, x2, y2) {
+  const C = x2-x1, D = y2-y1, lenSq = C*C+D*D;
+  let param = lenSq !== 0 ? ((px-x1)*C + (py-y1)*D) / lenSq : -1;
+  let xx, yy;
+  if (param < 0)      { xx = x1; yy = y1; }
+  else if (param > 1) { xx = x2; yy = y2; }
+  else                { xx = x1+param*C; yy = y1+param*D; }
+  return Math.sqrt((px-xx)**2 + (py-yy)**2);
+}
+
+function findSegmentNear(x, y, threshold = 15) {
+  let best = null, bestDist = threshold;
+  for (const s of segments) {
+    const d = distPointToSegment(x, y, s.x1, s.y1, s.x2, s.y2);
+    if (d < bestDist) { bestDist = d; best = s; }
+  }
+  return best;
+}
+
+// ---- Disegno canvas ----
+
+function drawGround() {
+  ctx.strokeStyle = "#000"; ctx.lineWidth = 4;
+  ctx.beginPath(); ctx.moveTo(0, groundY()); ctx.lineTo(canvas.width, groundY()); ctx.stroke();
+  ctx.strokeStyle = "#888"; ctx.lineWidth = 1;
+  for (let x = 0; x < canvas.width; x += 20) {
+    ctx.beginPath(); ctx.moveTo(x, groundY()); ctx.lineTo(x-10, groundY()+12); ctx.stroke();
+  }
+}
+
+function drawSegments(highlightId = null) {
+  for (const s of segments) {
+    ctx.strokeStyle = s.color; ctx.lineWidth = 6; ctx.lineCap = "round";
+    ctx.beginPath(); ctx.moveTo(s.x1, s.y1); ctx.lineTo(s.x2, s.y2); ctx.stroke();
+  }
+  if (highlightId != null) {
+    const s = segments.find(x => x.id === highlightId);
+    if (s) {
+      ctx.strokeStyle = "gold"; ctx.lineWidth = 10;
+      ctx.beginPath(); ctx.moveTo(s.x1, s.y1); ctx.lineTo(s.x2, s.y2); ctx.stroke();
+    }
+  }
+}
+
+function getJunctionNodes() {
+  const count = new Map(), pos = new Map();
+  function key(x, y) { return `${Math.round(x)}:${Math.round(y)}`; }
+  for (const s of segments) {
+    const k1 = key(s.x1,s.y1), k2 = key(s.x2,s.y2);
+    count.set(k1, (count.get(k1)||0) + 1);
+    count.set(k2, (count.get(k2)||0) + 1);
+    pos.set(k1, {x:s.x1, y:s.y1});
+    pos.set(k2, {x:s.x2, y:s.y2});
+  }
+  const result = [];
+  for (const [k, p] of pos) {
+    if ((count.get(k)||0) >= 2 || Math.abs(p.y - groundY()) < 2)
+      result.push(p);
+  }
+  return result;
+}
+
+function drawNodes() {
+  for (const n of getJunctionNodes()) {
+    ctx.beginPath(); ctx.arc(n.x, n.y, 5, 0, Math.PI*2);
+    ctx.fillStyle = "white"; ctx.fill();
+    ctx.strokeStyle = "#333"; ctx.lineWidth = 1.5; ctx.stroke();
+  }
+}
+
+function drawAll(highlightId = null) {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  drawGround();
+  drawSegments(highlightId);
+  drawNodes();
+}
+
+// ---- Input ----
+
+canvas.addEventListener("pointerdown", e => {
+  if (cpuThinking) return;
+  if (mode === "draw") {
+    const pos = getPointerPos(e);
+    drawing = true;
+    startPoint = currentPoint = snapPoint(pos.x, pos.y);
+  }
+});
+
+canvas.addEventListener("pointermove", e => {
+  if (!drawing) return;
+  currentPoint = snapPoint(getPointerPos(e).x, getPointerPos(e).y);
+  drawAll();
+  ctx.strokeStyle = currentColor; ctx.lineWidth = 4; ctx.setLineDash([6,6]);
+  ctx.beginPath(); ctx.moveTo(startPoint.x, startPoint.y); ctx.lineTo(currentPoint.x, currentPoint.y); ctx.stroke();
+  ctx.setLineDash([]);
+});
+
+canvas.addEventListener("pointerup", e => {
+  if (cpuThinking) return;
+  const pos = getPointerPos(e);
+
+  if (!drawing && mode === "play") {
+    const s = findSegmentNear(pos.x, pos.y, 18);
+    if (s) {
+      if (canCut(s, currentPlayer)) {
+        playerMove(s.id);
+      } else {
+        updateStatus("Non puoi tagliare questo colore!");
+      }
+    }
+    return;
+  }
+
+  if (!drawing) return;
+  drawing = false;
+  if (!startPoint || !currentPoint) return;
+  if (Math.hypot(currentPoint.x-startPoint.x, currentPoint.y-startPoint.y) < 10) { drawAll(); return; }
+  saveHistory();
+  segments.push({ id: nextId++, x1: startPoint.x, y1: startPoint.y, x2: currentPoint.x, y2: currentPoint.y, color: currentColor });
+  startPoint = currentPoint = null;
+  drawAll();
+});
+
+// ---- Regole Hackenbush ----
+// Rosso taglia: rosso e verde. Blu taglia: blu e verde.
+function canCut(seg, player) {
+  return seg.color === "green" || seg.color === player;
+}
+
+function movesAvailable(player) {
+  return segments.some(s => canCut(s, player));
+}
+
+// ---- Turni ----
+
+function playerMove(id) {
+  saveHistory();
+  fadeOutSegment(segments.find(s => s.id === id), () => {
+    switchTurn();
+    scheduleCpuMove();
+  });
+}
+
+function switchTurn() {
+  currentPlayer = (currentPlayer === "red") ? "blue" : "red";
+  drawAll();
+  updateStatus();
+  checkWin();
+}
+
+function checkWin() {
+  // Perde chi non ha mosse disponibili nel proprio turno
+  if (!movesAvailable(currentPlayer)) {
+    const winner = (currentPlayer === "red") ? "blue" : "red";
+    canvas.style.pointerEvents = "none";
+    cpuThinking = false;
+    document.getElementById("endgamePanel").style.display = "block";
+    document.getElementById("endgameMessage").textContent = `🏆 Ha vinto ${winner}!`;
+  }
+}
+
+// ---- CPU ----
+
+function scheduleCpuMove() {
+  if (mode !== "play") return;
+  if (opponent === "human") return;
+  if (currentPlayer !== "blue") return;
+  if (!movesAvailable("blue")) return;
+  cpuThinking = true;
+  updateStatus("CPU pensa...");
+  setTimeout(() => {
+    const chosen = (opponent === "sg") ? sgBestMove() : randomMove();
+    cpuThinking = false;
+    if (chosen) {
+      fadeOutSegment(chosen, () => { switchTurn(); });
+    }
+  }, 600);
+}
+
+function randomMove() {
+  const movable = segments.filter(s => canCut(s, "blue"));
+  return movable.length ? movable[Math.floor(Math.random() * movable.length)] : null;
+}
+
+// ---- Sprague-Grundy ----
+
+function nodeKey(x, y) { return `${Math.round(x)}:${Math.round(y)}`; }
+
+function buildAdj(segs) {
+  const adj = new Map();
+  function addE(a, b, id) { if (!adj.has(a)) adj.set(a,[]); adj.get(a).push({to:b,id}); }
+  for (const s of segs) {
+    const a = nodeKey(s.x1,s.y1), b = nodeKey(s.x2,s.y2);
+    addE(a,b,s.id); addE(b,a,s.id);
+  }
+  return adj;
+}
+
+function getGroundSet(segs) {
+  const gy = groundY_int(), g = new Set();
+  for (const s of segs) {
+    if (Math.abs(Math.round(s.y1)-gy) < 2) g.add(nodeKey(s.x1,s.y1));
+    if (Math.abs(Math.round(s.y2)-gy) < 2) g.add(nodeKey(s.x2,s.y2));
+  }
+  return g;
+}
+
+function reachableFrom(groundSet, adj) {
+  const visited = new Set([...groundSet]);
+  const queue = [...groundSet];
+  while (queue.length) {
+    const n = queue.shift();
+    for (const {to} of (adj.get(n)||[])) {
+      if (!visited.has(to)) { visited.add(to); queue.push(to); }
+    }
+  }
+  return visited;
+}
+
+// Grundy per albero radicato: G(nodo) = XOR_figli( G(figlio)+1 )
+function grundyTree(node, parent, adj, memo) {
+  const k = node+"|"+(parent||"_");
+  if (memo.has(k)) return memo.get(k);
+  let xorSum = 0;
+  for (const {to} of (adj.get(node)||[])) {
+    if (to === parent) continue;
+    xorSum ^= (grundyTree(to, node, adj, memo) + 1);
+  }
+  memo.set(k, xorSum);
+  return xorSum;
+}
+
+function computeNimValue(segs) {
+  const adj = buildAdj(segs);
+  const groundSet = getGroundSet(segs);
+  const reachable = reachableFrom(groundSet, adj);
+  const memo = new Map();
+  let nim = 0;
+  for (const g of groundSet) {
+    for (const {to} of (adj.get(g)||[])) {
+      if (reachable.has(to)) nim ^= (grundyTree(to, g, adj, memo) + 1);
+    }
+  }
+  return nim;
+}
+
+function simulateRemove(segs, removeId) {
+  const after = segs.filter(s => s.id !== removeId);
+  const adj = buildAdj(after);
+  const groundSet = getGroundSet(after);
+  const reachable = reachableFrom(groundSet, adj);
+  return after.filter(s =>
+    reachable.has(nodeKey(s.x1,s.y1)) && reachable.has(nodeKey(s.x2,s.y2))
+  );
+}
+
+function sgBestMove() {
+  const movable = segments.filter(s => canCut(s, "blue"));
+  // cerca mossa che porta nim=0 (posizione perdente per l'avversario)
+  for (const s of movable) {
+    if (computeNimValue(simulateRemove(segments, s.id)) === 0) return s;
+  }
+  // siamo già in posizione perdente: gioca a caso
+  return movable[Math.floor(Math.random() * movable.length)];
+}
+
+// ---- Connettività ----
+
+function removeDisconnected() {
+  const adj = buildAdj(segments);
+  const groundSet = getGroundSet(segments);
+  const reachable = reachableFrom(groundSet, adj);
+  segments = segments.filter(s =>
+    reachable.has(nodeKey(s.x1,s.y1)) && reachable.has(nodeKey(s.x2,s.y2))
+  );
+}
+
+function cutSegment(id) {
+  segments = segments.filter(s => s.id !== id);
+  removeDisconnected();
+  drawAll();
+}
+
+function fadeOutSegment(seg, callback) {
+  if (!seg) { if (callback) callback(); return; }
+  let alpha = 1;
+  const step = () => {
+    alpha -= 0.1;
+    if (alpha <= 0) {
+      cutSegment(seg.id);
+      if (callback) callback();
+    } else {
+      drawAll(seg.id);
+      ctx.globalAlpha = alpha; ctx.strokeStyle = seg.color; ctx.lineWidth = 6;
+      ctx.beginPath(); ctx.moveTo(seg.x1,seg.y1); ctx.lineTo(seg.x2,seg.y2); ctx.stroke();
+      ctx.globalAlpha = 1;
+      requestAnimationFrame(step);
+    }
+  };
+  step();
+}
+
+// ---- Undo / Reset / Save / Load ----
+
+function saveHistory() { history.push(JSON.stringify(segments)); if (history.length > 50) history.shift(); }
+
+function undo() {
+  if (history.length === 0) return;
+  segments = JSON.parse(history.pop());
+  drawAll();
+}
+
+function resetAll() {
+  segments = []; history = []; nextId = 1; cpuThinking = false; savedMap = null;
+  drawing = false; startPoint = null; currentPoint = null;
+  document.getElementById("endgamePanel").style.display = "none";
+  canvas.style.pointerEvents = "auto";
+  mode = "draw";
+  currentPlayer = "red";
+  document.getElementById("modeDraw").classList.add("active");
+  document.getElementById("modePlay").classList.remove("active");
+  updateStatus();
+  drawAll();
+}
+
+function saveJSON() {
+  const blob = new Blob([JSON.stringify(segments, null, 2)], {type:"application/json"});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a"); a.href = url; a.download = "hackenbush.json"; a.click();
+  URL.revokeObjectURL(url);
+}
+
+function loadJSON(e) {
+  const file = e.target.files[0]; if (!file) return;
+  const reader = new FileReader();
+  reader.onload = ev => {
+    try {
+      segments = JSON.parse(ev.target.result);
+      nextId = segments.length > 0 ? Math.max(...segments.map(s=>s.id))+1 : 1;
+      drawAll();
+    } catch { updateStatus("JSON non valido"); }
+  };
+  reader.readAsText(file);
+}
+
+// ---- Endgame panel ----
+
+document.getElementById("replayBtn").onclick = () => {
+  document.getElementById("endgamePanel").style.display = "none";
+  canvas.style.pointerEvents = "auto";
+  cpuThinking = false;
+  currentPlayer = "red";
+  history = [];
+  // ripristina esattamente la mappa salvata all'inizio della partita
+  if (savedMap !== null) {
+    segments = JSON.parse(JSON.stringify(savedMap));
+    nextId = segments.length > 0 ? Math.max(...segments.map(s=>s.id))+1 : 1;
+  }
+  drawAll();
+  updateStatus();
+};
+
+document.getElementById("saveMapBtn").onclick = saveJSON;
+
+document.getElementById("newMapBtn").onclick = () => {
+  document.getElementById("endgamePanel").style.display = "none";
+  resetAll();
+};
+
 updateStatus();
 </script>
 </body>
