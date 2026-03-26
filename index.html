@@ -381,4 +381,37 @@ function removeDisconnectedFromList(segList){
   let adjacency=new Map();
   for(let s of segList){ let a=key(s.x1,s.y1), b=key(s.x2,s.y2); if(!adjacency.has(a)) adjacency.set(a,[]); if(!adjacency.has(b)) adjacency.set(b,[]); adjacency.get(a).push(b); adjacency.get(b).push(a);}
   let groundNodes=new Set(); for(let s of segList){ if(Math.abs(s.y1-groundY())<2) groundNodes.add(key(s.x1,s.y1)); if(Math.abs(s.y2-groundY())<2) groundNodes.add(key(s.x2,s.y2));}
-  let
+  let visited=new Set([...groundNodes]), queue=[...groundNodes];
+  while(queue.length>0){ let n=queue.shift(); let neigh=adjacency.get(n)||[]; for(let m of neigh) if(!visited.has(m)){visited.add(m); queue.push(m);}}
+  return segList.filter(s=>visited.has(key(s.x1,s.y1)) && visited.has(key(s.x2,s.y2)));
+}
+
+// --- Endgame overlay buttons ---
+document.getElementById("replayBtn").onclick = ()=>{
+  document.getElementById("endgamePanel").classList.remove("show");
+  setTimeout(()=>document.getElementById("endgameOverlay").style.display="none",300);
+  segments.forEach(s=>{}); // mantiene la mappa
+  mode="play";
+  currentPlayer="red";
+  canvas.style.pointerEvents="auto";
+  drawAll();
+  updateStatus();
+};
+
+document.getElementById("saveMapBtn").onclick = ()=>{
+  saveJSON();
+};
+
+document.getElementById("newMapBtn").onclick = ()=>{
+  document.getElementById("endgamePanel").classList.remove("show");
+  setTimeout(()=>document.getElementById("endgameOverlay").style.display="none",300);
+  resetAll();
+};
+
+// --- Initialize ---
+updateStatus();
+drawAll();
+</script>
+
+</body>
+</html>
