@@ -62,6 +62,12 @@ canvas {
   <input type="file" id="fileInput" style="display:none">
   <div id="status"></div>
 </div>
+<div id="endgamePanel" style="display:none; position:fixed; top:50%; left:50%; transform:translate(-50%,-50%); background:white; border:2px solid #222; border-radius:12px; padding:20px; z-index:20; text-align:center; box-shadow:0 0 15px rgba(0,0,0,0.3);">
+  <div id="endgameMessage" style="margin-bottom:20px; font-weight:bold;"></div>
+  <button id="replayBtn" style="margin:5px;">🎮 Rigioca</button>
+  <button id="saveMapBtn" style="margin:5px;">💾 Salva mappa</button>
+  <button id="newMapBtn" style="margin:5px;">🗑️ Nuova partita</button>
+</div>
 
 <canvas id="canvas"></canvas>
 
@@ -218,16 +224,16 @@ function switchTurn(){
 }
 
 function checkWin(){
-  // costruiamo la lista di segmenti raggiungibili dal terreno
-  const reachableSegments = segments.filter(s => {
-    return s.color === "green" || s.color === currentPlayer;
-  });
-
+  const reachableSegments = segments.filter(s => s.color === "green" || s.color === currentPlayer);
   if(reachableSegments.length === 0){
-    // nessun segmento valido → vittoria per l'altro giocatore
     const winner = (currentPlayer === "red") ? "blue" : "red";
     updateStatus(`Gioco finito! Ha vinto ${winner}!`);
     canvas.style.pointerEvents = "none";
+    // mostra pannello endgame
+    const panel = document.getElementById("endgamePanel");
+    const msg = document.getElementById("endgameMessage");
+    panel.style.display = "block";
+    msg.textContent = `Ha vinto ${winner}!`;
   }
 }
 
@@ -267,7 +273,22 @@ function fadeOutSegment(seg){
   };
   step();
 }
+const endgamePanel = document.getElementById("endgamePanel");
+document.getElementById("replayBtn").onclick = ()=>{
+  endgamePanel.style.display = "none";
+  canvas.style.pointerEvents = "auto";
+  drawAll();
+  updateStatus();
+};
 
+document.getElementById("saveMapBtn").onclick = ()=>{
+  saveJSON();
+};
+
+document.getElementById("newMapBtn").onclick = ()=>{
+  endgamePanel.style.display = "none";
+  resetAll();
+};
 updateStatus(); drawAll();
 </script>
 
