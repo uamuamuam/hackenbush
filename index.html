@@ -326,10 +326,15 @@ function getGroundSet(segs) {
 function reachableFrom(groundSet, adj) {
   const visited = new Set([...groundSet]);
   const queue = [...groundSet];
-  while (queue.length) {
-    const n = queue.shift();
+  let qi = 0;
+
+  while (qi < queue.length) {
+    const n = queue[qi++];
     for (const {to} of (adj.get(n)||[])) {
-      if (!visited.has(to)) { visited.add(to); queue.push(to); }
+      if (!visited.has(to)) {
+        visited.add(to);
+        queue.push(to);
+      }
     }
   }
   return visited;
@@ -393,15 +398,22 @@ function computeNimValue(segs) {
 
   // Grundy bottom-up sullo spanning tree (BFS level-order, poi inverso)
   const bfsOrder = [];
-  const bfsQ = [...groundSet].filter(g => visited.has(g));
-  const bfsSeen = new Set(bfsQ);
-  bfsOrder.push(...bfsQ);
-  while (bfsQ.length) {
-    const n = bfsQ.shift();
-    for (const c of (childrenOf.get(n)||[])) {
-      if (!bfsSeen.has(c)) { bfsSeen.add(c); bfsQ.push(c); bfsOrder.push(c); }
+const bfsQ = [...groundSet].filter(g => visited.has(g));
+let bi = 0;
+
+const bfsSeen = new Set(bfsQ);
+bfsOrder.push(...bfsQ);
+
+while (bi < bfsQ.length) {
+  const n = bfsQ[bi++];
+  for (const c of (childrenOf.get(n)||[])) {
+    if (!bfsSeen.has(c)) {
+      bfsSeen.add(c);
+      bfsQ.push(c);
+      bfsOrder.push(c);
     }
   }
+}
 
   const grundy = new Map();
   for (let i = bfsOrder.length - 1; i >= 0; i--) {
