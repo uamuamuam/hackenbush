@@ -212,15 +212,22 @@ function loadJSON(e){ const file=e.target.files[0]; if(!file) return; const read
 // --- Turni e vittoria ---
 function switchTurn(){
   currentPlayer = (currentPlayer === "red") ? "blue" : "red";
+  drawAll();
   updateStatus();
   checkWin();
 }
 
 function checkWin(){
-  const moves = segments.filter(s => s.color==="green" || s.color===currentPlayer);
-  if(moves.length === 0){
-    updateStatus(`Gioco finito! Ha vinto ${currentPlayer==="red"?"blue":"red"}!`);
-    canvas.style.pointerEvents="none";
+  // costruiamo la lista di segmenti raggiungibili dal terreno
+  const reachableSegments = segments.filter(s => {
+    return s.color === "green" || s.color === currentPlayer;
+  });
+
+  if(reachableSegments.length === 0){
+    // nessun segmento valido → vittoria per l'altro giocatore
+    const winner = (currentPlayer === "red") ? "blue" : "red";
+    updateStatus(`Gioco finito! Ha vinto ${winner}!`);
+    canvas.style.pointerEvents = "none";
   }
 }
 
