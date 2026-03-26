@@ -38,6 +38,8 @@ canvas {
   top:70px; left:0;
   width:100%; height:calc(100% - 70px);
   touch-action: none;
+  -webkit-user-select:none;
+  -webkit-touch-callout:none;
   background: #fafafa;
 }
 </style>
@@ -106,9 +108,10 @@ function setMode(m){
   updateStatus();
   drawAll();
 }
-function updateStatus(){
+function updateStatus(msg){
   if(mode==="draw") statusDiv.innerHTML=`Modalità Disegno | Colore: <b style="color:${currentColor}">${currentColor}</b>`;
   else statusDiv.innerHTML=`Modalità Gioco | Turno: <b style="color:${currentPlayer}">${currentPlayer}</b>`;
+  if(msg) statusDiv.innerHTML += `<br><span style="color:red">${msg}</span>`;
 }
 
 // --- Disegno e Canvas ---
@@ -134,22 +137,37 @@ function snapPoint(x,y){
   return {x,y};
 }
 
+// --- Pointer helpers for iOS ---
+function getPointerPos(e){
+  const rect = canvas.getBoundingClientRect();
+  let x = e.clientX - rect.left;
+  let y = e.clientY - rect.top;
+  return {x, y};
+}
+
 // --- Mouse/Touch ---
 canvas.addEventListener("pointerdown", e=>{
-  let x=e.offsetX, y=e.offsetY;
+  let pos = getPointerPos(e);
+  let x=pos.x, y=pos.y;
   if(mode==="draw"){drawing=true; startPoint=currentPoint=snapPoint(x,y);}
   else if(mode==="play"){
     let s=findSegmentNear(x,y,18);
     if(!s) return;
-    if(s.color!=="green" && s.color!==currentPlayer){ alert("Puoi tagliare solo il tuo colore o verde!"); return;}
+    if(s.color!=="green" && s.color!==currentPlayer){
+      updateStatus("Puoi tagliare solo il tuo colore o verde!");
+      return;
+    }
     saveHistory(); cutSegment(s.id); switchTurn();
   }
 });
 canvas.addEventListener("pointermove", e=>{
   if(!drawing) return;
-  let x=e.offsetX, y=e.offsetY;
-  currentPoint=snapPoint(x,y);
-  drawAll(); ctx.strokeStyle=currentColor; ctx.lineWidth=4; ctx.setLineDash([6,6]); ctx.beginPath(); ctx.moveTo(startPoint.x,startPoint.y); ctx.lineTo(currentPoint.x,currentPoint.y); ctx.stroke(); ctx.setLineDash([]);
+  let pos = getPointerPos(e);
+  currentPoint = snapPoint(pos.x,pos.y);
+  drawAll();
+  ctx.strokeStyle=currentColor; ctx.lineWidth=4; ctx.setLineDash([6,6]);
+  ctx.beginPath(); ctx.moveTo(startPoint.x,startPoint.y); ctx.lineTo(currentPoint.x,currentPoint.y); ctx.stroke();
+  ctx.setLineDash([]);
 });
 canvas.addEventListener("pointerup", e=>{
   if(!drawing) return; drawing=false; 
@@ -171,7 +189,7 @@ function resetAll(){ if(!confirm("Vuoi cancellare tutto?")) return; segments=[];
 
 // --- Save/Load JSON ---
 function saveJSON(){ const blob=new Blob([JSON.stringify(segments,null,2)],{type:"application/json"}); const url=URL.createObjectURL(blob); const a=document.createElement("a"); a.href=url; a.download="hackenbush.json"; a.click(); URL.revokeObjectURL(url); }
-function loadJSON(e){ const file=e.target.files[0]; if(!file) return; const reader=new FileReader(); reader.onload=function(ev){ try{segments=JSON.parse(ev.target.result); nextId=segments.length>0?Math.max(...segments.map(s=>s.id))+1:1; drawAll(); }catch(err){alert("JSON non valido")}}; reader.readAsText(file); }
+function loadJSON(e){ const file=e.target.files[0]; if(!file) return; const reader=new FileReader(); reader.onload=function(ev){ try{segments=JSON.parse(ev.target.result); nextId=segments.length>0?Math.max(...segments.map(s=>s.id))+1:1; drawAll(); }catch(err){updateStatus("JSON non valido")}}; reader.readAsText(file); }
 
 // --- Turni ---
 function switchTurn(){ currentPlayer=(currentPlayer==="red")?"blue":"red"; updateStatus(); }
