@@ -30,10 +30,11 @@ canvas{flex:1;width:100%;touch-action:none;background:#fafafa}
     Griglia<input type="number" id="gridSize" value="20" min="5" max="100" style="width:50px">
   </label>
   <select id="opponentSelect">
-    <option value="human">vs Umano</option>
-    <option value="random">vs CPU Casuale</option>
-    <option value="sg">vs CPU Sprague-Grundy</option>
-  </select>
+  <option value="human">vs Umano</option>
+  <option value="random">vs CPU Casuale</option>
+  <option value="mcts">vs CPU MCTS</option>
+  <option value="sg">vs CPU Sprague-Grundy (solo verde)</option>
+</select>
   <button id="undoBtn">↩️ Undo</button>
   <button id="clearBtn">🗑️ Reset</button>
   <button id="saveBtn">💾 Save</button>
@@ -279,7 +280,9 @@ function scheduleCpuMove() {
   setTimeout(() => {
     let chosen = null;
     try {
-      chosen = (opponent === "sg") ? sgBestMove() : randomMove();
+      chosen = (opponent === "mcts") ? mctsBestMove(350) :
+         (opponent === "sg")   ? sgBestMove() :
+                                 randomMove();
     } catch(e) { console.warn("CPU error:", e); }
     if (!chosen) chosen = randomMove();
     cpuThinking = false;
@@ -299,7 +302,161 @@ function randomMove() {
 // Teorema di Hackenbush verde su grafi:
 //   nim(grafo) = nim(spanning tree) XOR numero_di_cicli_indipendenti % 2
 // Per lo spanning tree usiamo Grundy bottom-up iterativo.
+// ======================
+// MCTS CPU (Partizan)
+// ======================
 
+// fast copy
+function cloneSegs(segs) {
+  return segs.map(s => ({...s}));
+}
+
+function legalMovesFor(segs, player) {
+  return segs.filter(s => (s.color === "green" || s.color === player));
+}
+
+// Apply cut + remove disconnected (pure function)
+function applyMove(segs, moveId) {
+  let after = segs.filter(s => s.id !== moveId);
+
+  // remove disconnected from ground
+  const adj = buildAdj(after);
+  const groundSet = getGroundSet(after);
+  if (!groundSet.size) return [];
+  const reachable = reachableFrom(groundSet, adj);
+
+  after = after.filter(s =>
+    reachable.has(nodeKey(s.x1,s.y1)) && reachable.has(nodeKey(s.x2,s.y2))
+  );
+
+  return after;
+}
+
+function terminalWinner(segs, playerToMove) {
+  // if player cannot move -> loses
+  const moves = legalMovesFor(segs, playerToMove);
+  if (moves.length === 0) {
+    return (playerToMove === "red") ? "blue" : "red";
+  }
+  return null;
+}
+
+// rollout policy: prefer moves that drop many edges
+function rolloutPickMove(segs, player) {
+  const moves = legalMovesFor(segs, player);
+  if (!moves.length) return null;
+
+  // evaluate drop size cheaply by simulating a few candidates
+  // (not all, for speed)
+  const sampleCount = Math.min(6, moves.length);
+  let best = null;
+  let bestScore = -Infinity;
+
+  for (let i = 0; i < sampleCount; i++) {
+    const m = moves[Math.floor(Math.random() * moves.length)];
+    const next = applyMove(segs, m.id);
+    const dropped = segs.length - next.length;
+
+    // add small randomness
+    const score = dropped + Math.random() * 0.3;
+
+    if (score > bestScore) {
+      bestScore = score;
+      best = m;
+    }
+  }
+
+  return best;
+}
+
+// One playout from state until terminal.
+// Returns winner ("red" or "blue").
+function simulatePlayout(startSegs, startPlayer) {
+  let segs = startSegs;
+  let player = startPlayer;
+
+  // safety cap
+  for (let step = 0; step < 200; step++) {
+    const win = terminalWinner(segs, player);
+    if (win) return win;
+
+    const move = rolloutPickMove(segs, player);
+    if (!move) return (player === "red") ? "blue" : "red";
+
+    segs = applyMove(segs, move.id);
+    player = (player === "red") ? "blue" : "red";
+  }
+
+  // fallback if loop cap reached (should not happen)
+  return "red";
+}
+
+// Main MCTS move picker for BLUE (CPU)
+function mctsBestMove(simulations = 300) {
+  const rootMoves = legalMovesFor(segments, "blue");
+  if (!rootMoves.length) return null;
+
+  // Stats: moveId -> {wins, plays}
+  const stats = new Map();
+  for (const m of rootMoves) stats.set(m.id, {wins:0, plays:0});
+
+  for (let i = 0; i < simulations; i++) {
+    // pick move with UCB1
+    let chosen = null;
+    let bestUcb = -Infinity;
+
+    const totalPlays = i + 1;
+
+    for (const m of rootMoves) {
+      const st = stats.get(m.id);
+      const w = st.wins;
+      const n = st.plays;
+
+      // force exploration
+      if (n === 0) {
+        chosen = m;
+        bestUcb = Infinity;
+        break;
+      }
+
+      const winRate = w / n;
+      const ucb = winRate + Math.sqrt(2 * Math.log(totalPlays) / n);
+
+      if (ucb > bestUcb) {
+        bestUcb = ucb;
+        chosen = m;
+      }
+    }
+
+    if (!chosen) chosen = rootMoves[Math.floor(Math.random() * rootMoves.length)];
+
+    // apply chosen move
+    const nextSegs = applyMove(cloneSegs(segments), chosen.id);
+
+    // simulate random game from there, red to move
+    const winner = simulatePlayout(nextSegs, "red");
+
+    // update stats (CPU is blue)
+    const st = stats.get(chosen.id);
+    st.plays++;
+    if (winner === "blue") st.wins++;
+  }
+
+  // choose move with best win rate
+  let bestMove = rootMoves[0];
+  let bestRate = -1;
+
+  for (const m of rootMoves) {
+    const st = stats.get(m.id);
+    const rate = (st.plays > 0) ? st.wins / st.plays : 0;
+    if (rate > bestRate) {
+      bestRate = rate;
+      bestMove = m;
+    }
+  }
+
+  return bestMove;
+}
 function nodeKey(x, y) { return `${Math.round(x)}:${Math.round(y)}`; }
 
 function buildAdj(segs) {
