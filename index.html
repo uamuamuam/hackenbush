@@ -20,21 +20,26 @@ canvas{flex:1;width:100%;touch-action:none;background:#fafafa}
 <body>
 <div id="toolbar">
   <button id="modeDraw" class="active">✏️ Disegno</button>
+  <button id="modeMove">🧲 Sposta nodi</button>
   <button id="modePlay">🎮 Gioco</button>
+
   <select id="colorSelect">
     <option value="red">Rosso</option>
     <option value="blue">Blu</option>
     <option value="green">Verde</option>
   </select>
+
   <label style="font-size:13px;display:flex;align-items:center;gap:4px">
     Griglia<input type="number" id="gridSize" value="20" min="5" max="100" style="width:50px">
   </label>
+
   <select id="opponentSelect">
-  <option value="human">vs Umano</option>
-  <option value="random">vs CPU Casuale</option>
-  <option value="mcts">vs CPU MCTS</option>
-  <option value="sg">vs CPU Sprague-Grundy (solo verde)</option>
-</select>
+    <option value="human">vs Umano</option>
+    <option value="random">vs CPU Casuale</option>
+    <option value="mcts">vs CPU MCTS</option>
+    <option value="sg">vs CPU Sprague-Grundy (solo verde)</option>
+  </select>
+
   <button id="undoBtn">↩️ Undo</button>
   <button id="clearBtn">🗑️ Reset</button>
   <button id="saveBtn">💾 Save</button>
@@ -42,7 +47,9 @@ canvas{flex:1;width:100%;touch-action:none;background:#fafafa}
   <input type="file" id="fileInput" style="display:none">
   <div id="status"></div>
 </div>
+
 <canvas id="canvas"></canvas>
+
 <div id="endgamePanel">
   <div id="endgameMessage"></div>
   <button class="ep-btn" id="replayBtn">🎮 Rigioca</button>
@@ -64,6 +71,10 @@ let cpuThinking = false;
 let opponent = "human";
 let savedMap = null;
 
+// Move nodes mode
+let moveNodes = false;
+let draggingNodeKey = null;
+
 document.getElementById("opponentSelect").onchange = e => { opponent = e.target.value; };
 
 function resize() {
@@ -84,25 +95,37 @@ document.getElementById("saveBtn").onclick  = saveJSON;
 document.getElementById("loadBtn").onclick  = () => document.getElementById("fileInput").click();
 document.getElementById("fileInput").addEventListener("change", loadJSON);
 
+document.getElementById("modeMove").onclick = () => {
+  moveNodes = !moveNodes;
+  document.getElementById("modeMove").classList.toggle("active", moveNodes);
+  updateStatus();
+};
+
 function setMode(m) {
   mode = m;
   document.getElementById("modeDraw").classList.toggle("active", mode === "draw");
   document.getElementById("modePlay").classList.toggle("active", mode === "play");
+
   if (mode === "play") {
     savedMap = JSON.parse(JSON.stringify(segments));
     currentPlayer = "red";
     cpuThinking = false;
+    moveNodes = false;
+    document.getElementById("modeMove").classList.remove("active");
   }
+
   updateStatus();
   drawAll();
 }
 
 function updateStatus(msg) {
   const s = document.getElementById("status");
-  if (mode === "draw")
-    s.innerHTML = `Disegno | Colore: <b style="color:${currentColor}">${currentColor}</b>`;
-  else
+  if (mode === "draw") {
+    s.innerHTML = `Disegno | Colore: <b style="color:${currentColor}">${currentColor}</b>`
+                + (moveNodes ? " | <b>Sposta nodi ON</b>" : "");
+  } else {
     s.innerHTML = `Turno: <b style="color:${currentPlayer}">${currentPlayer}</b>`;
+  }
   if (msg) s.innerHTML += ` &nbsp;<span style="color:#c00">${msg}</span>`;
 }
 
@@ -112,6 +135,7 @@ function groundY_int() { return Math.round(groundY()); }
 function snapPoint(x, y) {
   x = Math.round(x / gridSize) * gridSize;
   y = Math.round(y / gridSize) * gridSize;
+
   for (const s of segments) {
     if (Math.hypot(x - s.x1, y - s.y1) < 18) return { x: s.x1, y: s.y1 };
     if (Math.hypot(x - s.x2, y - s.y2) < 18) return { x: s.x2, y: s.y2 };
@@ -199,12 +223,63 @@ function drawAll(highlightId = null) {
   drawGround(); drawSegments(highlightId); drawNodes();
 }
 
+// ---- Move Nodes helpers ----
+
+function allNodePositions() {
+  const nodes = [];
+  for (const s of segments) {
+    nodes.push({x:s.x1, y:s.y1});
+    nodes.push({x:s.x2, y:s.y2});
+  }
+  return nodes;
+}
+
+function findNodeNear(x, y, threshold = 18) {
+  let best = null;
+  let bestDist = threshold;
+
+  for (const p of allNodePositions()) {
+    const d = Math.hypot(x - p.x, y - p.y);
+    if (d < bestDist) {
+      bestDist = d;
+      best = p;
+    }
+  }
+
+  if (!best) return null;
+  return {x: best.x, y: best.y};
+}
+
+function moveNode(oldX, oldY, newX, newY) {
+  for (const s of segments) {
+    if (Math.abs(s.x1 - oldX) < 1 && Math.abs(s.y1 - oldY) < 1) {
+      s.x1 = newX; s.y1 = newY;
+    }
+    if (Math.abs(s.x2 - oldX) < 1 && Math.abs(s.y2 - oldY) < 1) {
+      s.x2 = newX; s.y2 = newY;
+    }
+  }
+}
+
 // ---- Input ----
 
 canvas.addEventListener("pointerdown", e => {
   if (cpuThinking) return;
+  const pos = getPointerPos(e);
+
+  // drag node
+  if (mode === "draw" && moveNodes) {
+    const node = findNodeNear(pos.x, pos.y, 20);
+    if (node) {
+      saveHistory();
+      draggingNodeKey = nodeKey(node.x, node.y);
+      startPoint = node;
+      drawing = true;
+      return;
+    }
+  }
+
   if (mode === "draw") {
-    const pos = getPointerPos(e);
     drawing = true;
     startPoint = currentPoint = snapPoint(pos.x, pos.y);
   }
@@ -212,7 +287,24 @@ canvas.addEventListener("pointerdown", e => {
 
 canvas.addEventListener("pointermove", e => {
   if (!drawing) return;
-  currentPoint = snapPoint(getPointerPos(e).x, getPointerPos(e).y);
+  const pos = getPointerPos(e);
+
+  // dragging node
+  if (mode === "draw" && moveNodes && draggingNodeKey && startPoint) {
+    const snapped = snapPoint(pos.x, pos.y);
+
+    const newX = Math.round(snapped.x / gridSize) * gridSize;
+    const newY = Math.round(snapped.y / gridSize) * gridSize;
+
+    moveNode(startPoint.x, startPoint.y, newX, newY);
+    startPoint = {x:newX, y:newY};
+
+    drawAll();
+    return;
+  }
+
+  // normal drawing
+  currentPoint = snapPoint(pos.x, pos.y);
   drawAll();
   ctx.strokeStyle = currentColor; ctx.lineWidth = 4; ctx.setLineDash([6,6]);
   ctx.beginPath(); ctx.moveTo(startPoint.x, startPoint.y); ctx.lineTo(currentPoint.x, currentPoint.y); ctx.stroke();
@@ -222,6 +314,8 @@ canvas.addEventListener("pointermove", e => {
 canvas.addEventListener("pointerup", e => {
   if (cpuThinking) return;
   const pos = getPointerPos(e);
+
+  // play mode cut
   if (!drawing && mode === "play") {
     const s = findSegmentNear(pos.x, pos.y, 18);
     if (s) {
@@ -230,12 +324,34 @@ canvas.addEventListener("pointerup", e => {
     }
     return;
   }
+
   if (!drawing) return;
+
+  // finish dragging node
+  if (mode === "draw" && moveNodes && draggingNodeKey) {
+    drawing = false;
+    draggingNodeKey = null;
+    startPoint = null;
+    drawAll();
+    return;
+  }
+
+  // finish drawing segment
   drawing = false;
   if (!startPoint || !currentPoint) return;
-  if (Math.hypot(currentPoint.x-startPoint.x, currentPoint.y-startPoint.y) < 10) { drawAll(); return; }
+  if (Math.hypot(currentPoint.x-startPoint.x, currentPoint.y-startPoint.y) < 10) {
+    drawAll();
+    return;
+  }
+
   saveHistory();
-  segments.push({ id: nextId++, x1: startPoint.x, y1: startPoint.y, x2: currentPoint.x, y2: currentPoint.y, color: currentColor });
+  segments.push({
+    id: nextId++,
+    x1: startPoint.x, y1: startPoint.y,
+    x2: currentPoint.x, y2: currentPoint.y,
+    color: currentColor
+  });
+
   startPoint = currentPoint = null;
   drawAll();
 });
@@ -277,18 +393,21 @@ function scheduleCpuMove() {
   if (!movesAvailable("blue")) return;
   cpuThinking = true;
   updateStatus("CPU pensa...");
+
   setTimeout(() => {
     let chosen = null;
     try {
-      chosen = (opponent === "mcts") ? mctsBestMove(350) :
-         (opponent === "sg")   ? sgBestMove() :
-                                 randomMove();
+      chosen = (opponent === "mcts") ? mctsBestMove(900) :
+               (opponent === "sg")   ? sgBestMove() :
+                                       randomMove();
     } catch(e) { console.warn("CPU error:", e); }
+
     if (!chosen) chosen = randomMove();
+
     cpuThinking = false;
     if (chosen) fadeOutSegment(chosen, () => { switchTurn(); });
     else switchTurn();
-  }, 400);
+  }, 60);
 }
 
 function randomMove() {
@@ -296,167 +415,219 @@ function randomMove() {
   return movable.length ? movable[Math.floor(Math.random() * movable.length)] : null;
 }
 
-// ---- Sprague-Grundy su grafi generali (con cicli) ----
-// Algoritmo interamente iterativo — zero ricorsione, zero stack overflow.
-//
-// Teorema di Hackenbush verde su grafi:
-//   nim(grafo) = nim(spanning tree) XOR numero_di_cicli_indipendenti % 2
-// Per lo spanning tree usiamo Grundy bottom-up iterativo.
 // ======================
-// MCTS CPU (Partizan)
+// FAST MCTS CPU (Partizan)
 // ======================
 
-// fast copy
-function cloneSegs(segs) {
-  return segs.map(s => ({...s}));
-}
+function buildCompactPosition(segs) {
+  const nodeMap = new Map();
+  const nodes = [];
+  const edges = [];
 
-function legalMovesFor(segs, player) {
-  return segs.filter(s => (s.color === "green" || s.color === player));
-}
+  const gy = groundY_int();
 
-// Apply cut + remove disconnected (pure function)
-function applyMove(segs, moveId) {
-  let after = segs.filter(s => s.id !== moveId);
-
-  // remove disconnected from ground
-  const adj = buildAdj(after);
-  const groundSet = getGroundSet(after);
-  if (!groundSet.size) return [];
-  const reachable = reachableFrom(groundSet, adj);
-
-  after = after.filter(s =>
-    reachable.has(nodeKey(s.x1,s.y1)) && reachable.has(nodeKey(s.x2,s.y2))
-  );
-
-  return after;
-}
-
-function terminalWinner(segs, playerToMove) {
-  // if player cannot move -> loses
-  const moves = legalMovesFor(segs, playerToMove);
-  if (moves.length === 0) {
-    return (playerToMove === "red") ? "blue" : "red";
+  function getNodeId(x, y) {
+    const k = `${Math.round(x)}:${Math.round(y)}`;
+    if (nodeMap.has(k)) return nodeMap.get(k);
+    const id = nodes.length;
+    nodeMap.set(k, id);
+    nodes.push({x, y, isGround: Math.abs(Math.round(y) - gy) < 2});
+    return id;
   }
-  return null;
+
+  for (const s of segs) {
+    const a = getNodeId(s.x1, s.y1);
+    const b = getNodeId(s.x2, s.y2);
+    edges.push({a, b, color: s.color, id: s.id});
+  }
+
+  const adj = Array.from({length: nodes.length}, () => []);
+  for (let ei = 0; ei < edges.length; ei++) {
+    const e = edges[ei];
+    adj[e.a].push(ei);
+    adj[e.b].push(ei);
+  }
+
+  const groundNodes = [];
+  for (let i = 0; i < nodes.length; i++) if (nodes[i].isGround) groundNodes.push(i);
+
+  return {nodes, edges, adj, groundNodes};
 }
 
-// rollout policy: prefer moves that drop many edges
-function rolloutPickMove(segs, player) {
-  const moves = legalMovesFor(segs, player);
-  if (!moves.length) return null;
+function reachableNodesFromGround(pos, aliveEdges) {
+  const {adj, edges, groundNodes, nodes} = pos;
+  const reachable = new Uint8Array(nodes.length);
 
-  // evaluate drop size cheaply by simulating a few candidates
-  // (not all, for speed)
+  const queue = new Int32Array(nodes.length);
+  let qh = 0, qt = 0;
+
+  for (const g of groundNodes) {
+    reachable[g] = 1;
+    queue[qt++] = g;
+  }
+
+  while (qh < qt) {
+    const n = queue[qh++];
+
+    for (const ei of adj[n]) {
+      if (!aliveEdges[ei]) continue;
+      const e = edges[ei];
+      const to = (e.a === n) ? e.b : e.a;
+      if (!reachable[to]) {
+        reachable[to] = 1;
+        queue[qt++] = to;
+      }
+    }
+  }
+
+  return reachable;
+}
+
+function pruneDisconnectedEdges(pos, aliveEdges) {
+  const reachable = reachableNodesFromGround(pos, aliveEdges);
+  const {edges} = pos;
+
+  for (let ei = 0; ei < edges.length; ei++) {
+    if (!aliveEdges[ei]) continue;
+    const e = edges[ei];
+    if (!reachable[e.a] || !reachable[e.b]) aliveEdges[ei] = 0;
+  }
+}
+
+function legalMovesIndices(pos, aliveEdges, player) {
+  const {edges} = pos;
+  const moves = [];
+
+  for (let ei = 0; ei < edges.length; ei++) {
+    if (!aliveEdges[ei]) continue;
+    const c = edges[ei].color;
+    if (c === "green" || c === player) moves.push(ei);
+  }
+
+  return moves;
+}
+
+function applyMoveFast(pos, aliveEdges, moveEi) {
+  aliveEdges[moveEi] = 0;
+  pruneDisconnectedEdges(pos, aliveEdges);
+}
+
+function rolloutPickMoveFast(pos, aliveEdges, player) {
+  const moves = legalMovesIndices(pos, aliveEdges, player);
+  if (!moves.length) return -1;
+
   const sampleCount = Math.min(6, moves.length);
-  let best = null;
+  let bestEi = moves[Math.floor(Math.random() * moves.length)];
   let bestScore = -Infinity;
 
-  for (let i = 0; i < sampleCount; i++) {
-    const m = moves[Math.floor(Math.random() * moves.length)];
-    const next = applyMove(segs, m.id);
-    const dropped = segs.length - next.length;
+  let aliveCount = 0;
+  for (let i = 0; i < aliveEdges.length; i++) if (aliveEdges[i]) aliveCount++;
 
-    // add small randomness
-    const score = dropped + Math.random() * 0.3;
+  for (let i = 0; i < sampleCount; i++) {
+    const ei = moves[Math.floor(Math.random() * moves.length)];
+    const tmp = new Uint8Array(aliveEdges);
+
+    applyMoveFast(pos, tmp, ei);
+
+    let afterCount = 0;
+    for (let k = 0; k < tmp.length; k++) if (tmp[k]) afterCount++;
+
+    const dropped = aliveCount - afterCount;
+    const score = dropped + Math.random() * 0.2;
 
     if (score > bestScore) {
       bestScore = score;
-      best = m;
+      bestEi = ei;
     }
   }
 
-  return best;
+  return bestEi;
 }
 
-// One playout from state until terminal.
-// Returns winner ("red" or "blue").
-function simulatePlayout(startSegs, startPlayer) {
-  let segs = startSegs;
+function terminalWinnerFast(pos, aliveEdges, playerToMove) {
+  const moves = legalMovesIndices(pos, aliveEdges, playerToMove);
+  if (moves.length === 0) return (playerToMove === "red") ? "blue" : "red";
+  return null;
+}
+
+function simulatePlayoutFast(pos, aliveEdgesStart, startPlayer) {
+  let aliveEdges = new Uint8Array(aliveEdgesStart);
   let player = startPlayer;
 
-  // safety cap
   for (let step = 0; step < 200; step++) {
-    const win = terminalWinner(segs, player);
+    const win = terminalWinnerFast(pos, aliveEdges, player);
     if (win) return win;
 
-    const move = rolloutPickMove(segs, player);
-    if (!move) return (player === "red") ? "blue" : "red";
+    const moveEi = rolloutPickMoveFast(pos, aliveEdges, player);
+    if (moveEi < 0) return (player === "red") ? "blue" : "red";
 
-    segs = applyMove(segs, move.id);
+    applyMoveFast(pos, aliveEdges, moveEi);
     player = (player === "red") ? "blue" : "red";
   }
 
-  // fallback if loop cap reached (should not happen)
   return "red";
 }
 
-// Main MCTS move picker for BLUE (CPU)
-function mctsBestMove(simulations = 300) {
-  const rootMoves = legalMovesFor(segments, "blue");
+function mctsBestMove(simulations = 600) {
+  const pos = buildCompactPosition(segments);
+  if (!pos.groundNodes.length) return randomMove();
+
+  const alive0 = new Uint8Array(pos.edges.length);
+  alive0.fill(1);
+
+  pruneDisconnectedEdges(pos, alive0);
+
+  const rootMoves = legalMovesIndices(pos, alive0, "blue");
   if (!rootMoves.length) return null;
 
-  // Stats: moveId -> {wins, plays}
-  const stats = new Map();
-  for (const m of rootMoves) stats.set(m.id, {wins:0, plays:0});
+  const wins = new Float32Array(pos.edges.length);
+  const plays = new Uint32Array(pos.edges.length);
 
   for (let i = 0; i < simulations; i++) {
-    // pick move with UCB1
-    let chosen = null;
+    let chosenEi = rootMoves[0];
     let bestUcb = -Infinity;
+    const total = i + 1;
 
-    const totalPlays = i + 1;
+    for (const ei of rootMoves) {
+      const n = plays[ei];
+      if (n === 0) { chosenEi = ei; bestUcb = Infinity; break; }
 
-    for (const m of rootMoves) {
-      const st = stats.get(m.id);
-      const w = st.wins;
-      const n = st.plays;
-
-      // force exploration
-      if (n === 0) {
-        chosen = m;
-        bestUcb = Infinity;
-        break;
-      }
-
-      const winRate = w / n;
-      const ucb = winRate + Math.sqrt(2 * Math.log(totalPlays) / n);
+      const wr = wins[ei] / n;
+      const ucb = wr + Math.sqrt(2 * Math.log(total) / n);
 
       if (ucb > bestUcb) {
         bestUcb = ucb;
-        chosen = m;
+        chosenEi = ei;
       }
     }
 
-    if (!chosen) chosen = rootMoves[Math.floor(Math.random() * rootMoves.length)];
+    const alive = new Uint8Array(alive0);
+    applyMoveFast(pos, alive, chosenEi);
 
-    // apply chosen move
-    const nextSegs = applyMove(cloneSegs(segments), chosen.id);
+    const winner = simulatePlayoutFast(pos, alive, "red");
 
-    // simulate random game from there, red to move
-    const winner = simulatePlayout(nextSegs, "red");
-
-    // update stats (CPU is blue)
-    const st = stats.get(chosen.id);
-    st.plays++;
-    if (winner === "blue") st.wins++;
+    plays[chosenEi]++;
+    if (winner === "blue") wins[chosenEi] += 1;
   }
 
-  // choose move with best win rate
-  let bestMove = rootMoves[0];
+  let bestEi = rootMoves[0];
   let bestRate = -1;
 
-  for (const m of rootMoves) {
-    const st = stats.get(m.id);
-    const rate = (st.plays > 0) ? st.wins / st.plays : 0;
+  for (const ei of rootMoves) {
+    const n = plays[ei];
+    const rate = n ? (wins[ei] / n) : 0;
     if (rate > bestRate) {
       bestRate = rate;
-      bestMove = m;
+      bestEi = ei;
     }
   }
 
-  return bestMove;
+  const chosenId = pos.edges[bestEi].id;
+  return segments.find(s => s.id === chosenId) || randomMove();
 }
+
+// ---- Sprague-Grundy (ATTENZIONE: valido solo verde) ----
+
 function nodeKey(x, y) { return `${Math.round(x)}:${Math.round(y)}`; }
 
 function buildAdj(segs) {
@@ -504,16 +675,12 @@ function computeNimValue(segs) {
   if (!groundSet.size) return 0;
   const reachable = reachableFrom(groundSet, adj);
 
-  // DFS iterativo: costruisce spanning tree e conta back-edges (cicli indipendenti)
-  // Usiamo edge-id per distinguere l'arco percorso da quelli back
   const visited = new Set();
-  const parent = new Map();      // nodo -> nodo padre nello spanning tree
-  const parentEdgeId = new Map();// nodo -> id dell'arco che ci ha portati qui
-  const childrenOf = new Map();  // spanning tree: nodo -> [figli]
+  const parent = new Map();
+  const parentEdgeId = new Map();
+  const childrenOf = new Map();
   let backEdgeCount = 0;
 
-  // Stack: {node, parentNode, edgeId}
-  // Partiamo da tutti i nodi ground
   const stack = [];
   for (const g of groundSet) {
     if (reachable.has(g) && !visited.has(g)) {
@@ -530,9 +697,6 @@ function computeNimValue(segs) {
   while (stack.length) {
     const {node, par, eid} = stack.pop();
     if (visited.has(node)) {
-      // back-edge: ciclo indipendente
-      // Evitiamo di contare due volte lo stesso arco (a->b e b->a)
-      // lo contiamo solo se l'arco non era già l'arco parent
       backEdgeCount++;
       continue;
     }
@@ -544,33 +708,30 @@ function computeNimValue(segs) {
     childrenOf.set(node, []);
     for (const {to, id} of (adj.get(node)||[])) {
       if (!reachable.has(to)) continue;
-      if (id === eid) continue; // arco inverso di quello percorso
+      if (id === eid) continue;
       stack.push({node: to, par: node, eid: id});
     }
   }
 
-  // I back-edge vengono contati due volte (a->b e b->a) durante il DFS
-  // quindi dividiamo per 2
   const cycles = Math.floor(backEdgeCount / 2);
 
-  // Grundy bottom-up sullo spanning tree (BFS level-order, poi inverso)
   const bfsOrder = [];
-const bfsQ = [...groundSet].filter(g => visited.has(g));
-let bi = 0;
+  const bfsQ = [...groundSet].filter(g => visited.has(g));
+  let bi = 0;
 
-const bfsSeen = new Set(bfsQ);
-bfsOrder.push(...bfsQ);
+  const bfsSeen = new Set(bfsQ);
+  bfsOrder.push(...bfsQ);
 
-while (bi < bfsQ.length) {
-  const n = bfsQ[bi++];
-  for (const c of (childrenOf.get(n)||[])) {
-    if (!bfsSeen.has(c)) {
-      bfsSeen.add(c);
-      bfsQ.push(c);
-      bfsOrder.push(c);
+  while (bi < bfsQ.length) {
+    const n = bfsQ[bi++];
+    for (const c of (childrenOf.get(n)||[])) {
+      if (!bfsSeen.has(c)) {
+        bfsSeen.add(c);
+        bfsQ.push(c);
+        bfsOrder.push(c);
+      }
     }
   }
-}
 
   const grundy = new Map();
   for (let i = bfsOrder.length - 1; i >= 0; i--) {
@@ -582,16 +743,11 @@ while (bi < bfsQ.length) {
     grundy.set(n, xor);
   }
 
-  // nim totale = XOR dei Grundy di tutte le radici ground + contributo cicli
   let nim = 0;
   for (const g of groundSet) {
     if (visited.has(g)) nim ^= (grundy.get(g) || 0);
   }
-  // ogni ciclo indipendente aggiunge 1 al nim (XOR)
-  nim ^= (cycles & 1); // cycles cicli indipendenti → XOR di cycles volte 1
-  // per più cicli: XOR di k uni = k%2
-  // ma sopra abbiamo già fatto cycles%2 con & 1 solo se cycles dispari
-  // correggiamo: se cycles è pari → 0, dispari → 1
+  nim ^= (cycles & 1);
   return nim;
 }
 
@@ -663,6 +819,10 @@ function undo() {
 function resetAll() {
   segments = []; history = []; nextId = 1; cpuThinking = false; savedMap = null;
   drawing = false; startPoint = null; currentPoint = null;
+  draggingNodeKey = null;
+  moveNodes = false;
+  document.getElementById("modeMove").classList.remove("active");
+
   document.getElementById("endgamePanel").style.display = "none";
   canvas.style.pointerEvents = "auto";
   mode = "draw"; currentPlayer = "red";
@@ -697,14 +857,20 @@ document.getElementById("replayBtn").onclick = () => {
   document.getElementById("endgamePanel").style.display = "none";
   canvas.style.pointerEvents = "auto";
   cpuThinking = false; currentPlayer = "red"; history = [];
+
   if (savedMap !== null) {
     segments = JSON.parse(JSON.stringify(savedMap));
     nextId = segments.length > 0 ? Math.max(...segments.map(s=>s.id))+1 : 1;
   }
+
   drawAll(); updateStatus();
 };
+
 document.getElementById("saveMapBtn").onclick = saveJSON;
-document.getElementById("newMapBtn").onclick = () => { document.getElementById("endgamePanel").style.display = "none"; resetAll(); };
+document.getElementById("newMapBtn").onclick = () => {
+  document.getElementById("endgamePanel").style.display = "none";
+  resetAll();
+};
 
 updateStatus();
 </script>
