@@ -71,7 +71,6 @@ let cpuThinking = false;
 let opponent = "human";
 let savedMap = null;
 
-// Move nodes mode
 let moveNodes = false;
 let draggingNodeKey = null;
 
@@ -122,7 +121,8 @@ function updateStatus(msg) {
   const s = document.getElementById("status");
   if (mode === "draw") {
     s.innerHTML = `Disegno | Colore: <b style="color:${currentColor}">${currentColor}</b>`
-                + (moveNodes ? " | <b>Sposta nodi ON</b>" : "");
+                + (moveNodes ? " | <b>Sposta nodi ON</b>" : "")
+                + " | (clic corto = loop)";
   } else {
     s.innerHTML = `Turno: <b style="color:${currentPlayer}">${currentPlayer}</b>`;
   }
@@ -137,9 +137,14 @@ function snapPoint(x, y) {
   y = Math.round(y / gridSize) * gridSize;
 
   for (const s of segments) {
-    if (Math.hypot(x - s.x1, y - s.y1) < 18) return { x: s.x1, y: s.y1 };
-    if (Math.hypot(x - s.x2, y - s.y2) < 18) return { x: s.x2, y: s.y2 };
+    if (s.type === "line") {
+      if (Math.hypot(x - s.x1, y - s.y1) < 18) return { x: s.x1, y: s.y1 };
+      if (Math.hypot(x - s.x2, y - s.y2) < 18) return { x: s.x2, y: s.y2 };
+    } else if (s.type === "arc") {
+      if (Math.hypot(x - s.cx, y - s.cy) < 18) return { x: s.cx, y: s.cy };
+    }
   }
+
   if (Math.abs(y - groundY()) < 18) return { x, y: groundY() };
   return { x, y };
 }
@@ -159,12 +164,28 @@ function distPointToSegment(px, py, x1, y1, x2, y2) {
   return Math.sqrt((px-xx)**2 + (py-yy)**2);
 }
 
+function distPointToCircle(px, py, cx, cy, r) {
+  return Math.abs(Math.hypot(px - cx, py - cy) - r);
+}
+
 function findSegmentNear(x, y, threshold = 15) {
   let best = null, bestDist = threshold;
+
   for (const s of segments) {
-    const d = distPointToSegment(x, y, s.x1, s.y1, s.x2, s.y2);
-    if (d < bestDist) { bestDist = d; best = s; }
+    let d = Infinity;
+
+    if (s.type === "line") {
+      d = distPointToSegment(x, y, s.x1, s.y1, s.x2, s.y2);
+    } else if (s.type === "arc") {
+      d = distPointToCircle(x, y, s.cx, s.cy, s.r);
+    }
+
+    if (d < bestDist) {
+      bestDist = d;
+      best = s;
+    }
   }
+
   return best;
 }
 
@@ -181,14 +202,38 @@ function drawGround() {
 
 function drawSegments(highlightId = null) {
   for (const s of segments) {
-    ctx.strokeStyle = s.color; ctx.lineWidth = 6; ctx.lineCap = "round";
-    ctx.beginPath(); ctx.moveTo(s.x1, s.y1); ctx.lineTo(s.x2, s.y2); ctx.stroke();
+    ctx.strokeStyle = s.color;
+    ctx.lineWidth = 6;
+    ctx.lineCap = "round";
+
+    if (s.type === "line") {
+      ctx.beginPath();
+      ctx.moveTo(s.x1, s.y1);
+      ctx.lineTo(s.x2, s.y2);
+      ctx.stroke();
+    } else if (s.type === "arc") {
+      ctx.beginPath();
+      ctx.arc(s.cx, s.cy, s.r, 0, Math.PI * 2);
+      ctx.stroke();
+    }
   }
+
   if (highlightId != null) {
     const s = segments.find(x => x.id === highlightId);
     if (s) {
-      ctx.strokeStyle = "gold"; ctx.lineWidth = 10;
-      ctx.beginPath(); ctx.moveTo(s.x1, s.y1); ctx.lineTo(s.x2, s.y2); ctx.stroke();
+      ctx.strokeStyle = "gold";
+      ctx.lineWidth = 10;
+
+      if (s.type === "line") {
+        ctx.beginPath();
+        ctx.moveTo(s.x1, s.y1);
+        ctx.lineTo(s.x2, s.y2);
+        ctx.stroke();
+      } else if (s.type === "arc") {
+        ctx.beginPath();
+        ctx.arc(s.cx, s.cy, s.r, 0, Math.PI * 2);
+        ctx.stroke();
+      }
     }
   }
 }
@@ -196,13 +241,21 @@ function drawSegments(highlightId = null) {
 function getJunctionNodes() {
   const count = new Map(), pos = new Map();
   function key(x, y) { return `${Math.round(x)}:${Math.round(y)}`; }
+
   for (const s of segments) {
-    const k1 = key(s.x1,s.y1), k2 = key(s.x2,s.y2);
-    count.set(k1, (count.get(k1)||0) + 1);
-    count.set(k2, (count.get(k2)||0) + 1);
-    pos.set(k1, {x:s.x1, y:s.y1});
-    pos.set(k2, {x:s.x2, y:s.y2});
+    if (s.type === "line") {
+      const k1 = key(s.x1,s.y1), k2 = key(s.x2,s.y2);
+      count.set(k1, (count.get(k1)||0) + 1);
+      count.set(k2, (count.get(k2)||0) + 1);
+      pos.set(k1, {x:s.x1, y:s.y1});
+      pos.set(k2, {x:s.x2, y:s.y2});
+    } else if (s.type === "arc") {
+      const k = key(s.cx,s.cy);
+      count.set(k, (count.get(k)||0) + 2);
+      pos.set(k, {x:s.cx, y:s.cy});
+    }
   }
+
   const result = [];
   for (const [k, p] of pos) {
     if ((count.get(k)||0) >= 2 || Math.abs(p.y - groundY()) < 2) result.push(p);
@@ -212,15 +265,21 @@ function getJunctionNodes() {
 
 function drawNodes() {
   for (const n of getJunctionNodes()) {
-    ctx.beginPath(); ctx.arc(n.x, n.y, 5, 0, Math.PI*2);
-    ctx.fillStyle = "white"; ctx.fill();
-    ctx.strokeStyle = "#333"; ctx.lineWidth = 1.5; ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(n.x, n.y, 5, 0, Math.PI*2);
+    ctx.fillStyle = "white";
+    ctx.fill();
+    ctx.strokeStyle = "#333";
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
   }
 }
 
 function drawAll(highlightId = null) {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
-  drawGround(); drawSegments(highlightId); drawNodes();
+  drawGround();
+  drawSegments(highlightId);
+  drawNodes();
 }
 
 // ---- Move Nodes helpers ----
@@ -228,8 +287,12 @@ function drawAll(highlightId = null) {
 function allNodePositions() {
   const nodes = [];
   for (const s of segments) {
-    nodes.push({x:s.x1, y:s.y1});
-    nodes.push({x:s.x2, y:s.y2});
+    if (s.type === "line") {
+      nodes.push({x:s.x1, y:s.y1});
+      nodes.push({x:s.x2, y:s.y2});
+    } else if (s.type === "arc") {
+      nodes.push({x:s.cx, y:s.cy});
+    }
   }
   return nodes;
 }
@@ -252,11 +315,18 @@ function findNodeNear(x, y, threshold = 18) {
 
 function moveNode(oldX, oldY, newX, newY) {
   for (const s of segments) {
-    if (Math.abs(s.x1 - oldX) < 1 && Math.abs(s.y1 - oldY) < 1) {
-      s.x1 = newX; s.y1 = newY;
-    }
-    if (Math.abs(s.x2 - oldX) < 1 && Math.abs(s.y2 - oldY) < 1) {
-      s.x2 = newX; s.y2 = newY;
+    if (s.type === "line") {
+      if (Math.abs(s.x1 - oldX) < 1 && Math.abs(s.y1 - oldY) < 1) {
+        s.x1 = newX; s.y1 = newY;
+      }
+      if (Math.abs(s.x2 - oldX) < 1 && Math.abs(s.y2 - oldY) < 1) {
+        s.x2 = newX; s.y2 = newY;
+      }
+    } else if (s.type === "arc") {
+      if (Math.abs(s.cx - oldX) < 1 && Math.abs(s.cy - oldY) < 1) {
+        s.cx = newX;
+        s.cy = newY;
+      }
     }
   }
 }
@@ -267,7 +337,6 @@ canvas.addEventListener("pointerdown", e => {
   if (cpuThinking) return;
   const pos = getPointerPos(e);
 
-  // drag node
   if (mode === "draw" && moveNodes) {
     const node = findNodeNear(pos.x, pos.y, 20);
     if (node) {
@@ -289,7 +358,6 @@ canvas.addEventListener("pointermove", e => {
   if (!drawing) return;
   const pos = getPointerPos(e);
 
-  // dragging node
   if (mode === "draw" && moveNodes && draggingNodeKey && startPoint) {
     const snapped = snapPoint(pos.x, pos.y);
 
@@ -303,11 +371,18 @@ canvas.addEventListener("pointermove", e => {
     return;
   }
 
-  // normal drawing
   currentPoint = snapPoint(pos.x, pos.y);
   drawAll();
-  ctx.strokeStyle = currentColor; ctx.lineWidth = 4; ctx.setLineDash([6,6]);
-  ctx.beginPath(); ctx.moveTo(startPoint.x, startPoint.y); ctx.lineTo(currentPoint.x, currentPoint.y); ctx.stroke();
+
+  ctx.strokeStyle = currentColor;
+  ctx.lineWidth = 4;
+  ctx.setLineDash([6,6]);
+
+  ctx.beginPath();
+  ctx.moveTo(startPoint.x, startPoint.y);
+  ctx.lineTo(currentPoint.x, currentPoint.y);
+  ctx.stroke();
+
   ctx.setLineDash([]);
 });
 
@@ -315,7 +390,6 @@ canvas.addEventListener("pointerup", e => {
   if (cpuThinking) return;
   const pos = getPointerPos(e);
 
-  // play mode cut
   if (!drawing && mode === "play") {
     const s = findSegmentNear(pos.x, pos.y, 18);
     if (s) {
@@ -327,7 +401,6 @@ canvas.addEventListener("pointerup", e => {
 
   if (!drawing) return;
 
-  // finish dragging node
   if (mode === "draw" && moveNodes && draggingNodeKey) {
     drawing = false;
     draggingNodeKey = null;
@@ -336,21 +409,32 @@ canvas.addEventListener("pointerup", e => {
     return;
   }
 
-  // finish drawing segment
   drawing = false;
   if (!startPoint || !currentPoint) return;
-  if (Math.hypot(currentPoint.x-startPoint.x, currentPoint.y-startPoint.y) < 10) {
-    drawAll();
-    return;
-  }
+
+  const dist = Math.hypot(currentPoint.x-startPoint.x, currentPoint.y-startPoint.y);
 
   saveHistory();
-  segments.push({
-    id: nextId++,
-    x1: startPoint.x, y1: startPoint.y,
-    x2: currentPoint.x, y2: currentPoint.y,
-    color: currentColor
-  });
+
+  // LOOP: se il segmento è corto, crea arco circolare
+  if (dist < 10) {
+    segments.push({
+      id: nextId++,
+      type: "arc",
+      cx: startPoint.x,
+      cy: startPoint.y,
+      r: gridSize * 1.2,
+      color: currentColor
+    });
+  } else {
+    segments.push({
+      id: nextId++,
+      type: "line",
+      x1: startPoint.x, y1: startPoint.y,
+      x2: currentPoint.x, y2: currentPoint.y,
+      color: currentColor
+    });
+  }
 
   startPoint = currentPoint = null;
   drawAll();
@@ -391,6 +475,7 @@ function checkWin() {
 function scheduleCpuMove() {
   if (mode !== "play" || opponent === "human" || currentPlayer !== "blue") return;
   if (!movesAvailable("blue")) return;
+
   cpuThinking = true;
   updateStatus("CPU pensa...");
 
@@ -436,9 +521,14 @@ function buildCompactPosition(segs) {
   }
 
   for (const s of segs) {
-    const a = getNodeId(s.x1, s.y1);
-    const b = getNodeId(s.x2, s.y2);
-    edges.push({a, b, color: s.color, id: s.id});
+    if (s.type === "line") {
+      const a = getNodeId(s.x1, s.y1);
+      const b = getNodeId(s.x2, s.y2);
+      edges.push({a, b, color: s.color, id: s.id});
+    } else if (s.type === "arc") {
+      const a = getNodeId(s.cx, s.cy);
+      edges.push({a, b: a, color: s.color, id: s.id});
+    }
   }
 
   const adj = Array.from({length: nodes.length}, () => []);
@@ -633,11 +723,17 @@ function nodeKey(x, y) { return `${Math.round(x)}:${Math.round(y)}`; }
 function buildAdj(segs) {
   const adj = new Map();
   for (const s of segs) {
-    const a = nodeKey(s.x1,s.y1), b = nodeKey(s.x2,s.y2);
-    if (!adj.has(a)) adj.set(a, []);
-    if (!adj.has(b)) adj.set(b, []);
-    adj.get(a).push({to:b, id:s.id});
-    adj.get(b).push({to:a, id:s.id});
+    if (s.type === "line") {
+      const a = nodeKey(s.x1,s.y1), b = nodeKey(s.x2,s.y2);
+      if (!adj.has(a)) adj.set(a, []);
+      if (!adj.has(b)) adj.set(b, []);
+      adj.get(a).push({to:b, id:s.id});
+      adj.get(b).push({to:a, id:s.id});
+    } else if (s.type === "arc") {
+      const a = nodeKey(s.cx,s.cy);
+      if (!adj.has(a)) adj.set(a, []);
+      adj.get(a).push({to:a, id:s.id});
+    }
   }
   return adj;
 }
@@ -645,8 +741,12 @@ function buildAdj(segs) {
 function getGroundSet(segs) {
   const gy = groundY_int(), g = new Set();
   for (const s of segs) {
-    if (Math.abs(Math.round(s.y1)-gy) < 2) g.add(nodeKey(s.x1,s.y1));
-    if (Math.abs(Math.round(s.y2)-gy) < 2) g.add(nodeKey(s.x2,s.y2));
+    if (s.type === "line") {
+      if (Math.abs(Math.round(s.y1)-gy) < 2) g.add(nodeKey(s.x1,s.y1));
+      if (Math.abs(Math.round(s.y2)-gy) < 2) g.add(nodeKey(s.x2,s.y2));
+    } else if (s.type === "arc") {
+      if (Math.abs(Math.round(s.cy)-gy) < 2) g.add(nodeKey(s.cx,s.cy));
+    }
   }
   return g;
 }
@@ -676,8 +776,6 @@ function computeNimValue(segs) {
   const reachable = reachableFrom(groundSet, adj);
 
   const visited = new Set();
-  const parent = new Map();
-  const parentEdgeId = new Map();
   const childrenOf = new Map();
   let backEdgeCount = 0;
 
@@ -686,8 +784,6 @@ function computeNimValue(segs) {
     if (reachable.has(g) && !visited.has(g)) {
       visited.add(g);
       childrenOf.set(g, []);
-      parent.set(g, null);
-      parentEdgeId.set(g, -1);
       for (const {to, id} of (adj.get(g)||[])) {
         if (reachable.has(to)) stack.push({node: to, par: g, eid: id});
       }
@@ -701,8 +797,6 @@ function computeNimValue(segs) {
       continue;
     }
     visited.add(node);
-    parent.set(node, par);
-    parentEdgeId.set(node, eid);
     if (!childrenOf.has(par)) childrenOf.set(par, []);
     childrenOf.get(par).push(node);
     childrenOf.set(node, []);
@@ -756,9 +850,14 @@ function simulateRemove(segs, removeId) {
   const adj = buildAdj(after);
   const groundSet = getGroundSet(after);
   const reachable = reachableFrom(groundSet, adj);
-  return after.filter(s =>
-    reachable.has(nodeKey(s.x1,s.y1)) && reachable.has(nodeKey(s.x2,s.y2))
-  );
+
+  return after.filter(s => {
+    if (s.type === "line") {
+      return reachable.has(nodeKey(s.x1,s.y1)) && reachable.has(nodeKey(s.x2,s.y2));
+    } else {
+      return reachable.has(nodeKey(s.cx,s.cy));
+    }
+  });
 }
 
 function sgBestMove() {
@@ -776,9 +875,14 @@ function removeDisconnected() {
   const adj = buildAdj(segments);
   const groundSet = getGroundSet(segments);
   const reachable = reachableFrom(groundSet, adj);
-  segments = segments.filter(s =>
-    reachable.has(nodeKey(s.x1,s.y1)) && reachable.has(nodeKey(s.x2,s.y2))
-  );
+
+  segments = segments.filter(s => {
+    if (s.type === "line") {
+      return reachable.has(nodeKey(s.x1,s.y1)) && reachable.has(nodeKey(s.x2,s.y2));
+    } else {
+      return reachable.has(nodeKey(s.cx,s.cy));
+    }
+  });
 }
 
 function cutSegment(id) {
@@ -790,6 +894,7 @@ function cutSegment(id) {
 function fadeOutSegment(seg, callback) {
   if (!seg) { if (callback) callback(); return; }
   let alpha = 1;
+
   const step = () => {
     alpha -= 0.1;
     if (alpha <= 0) {
@@ -797,12 +902,27 @@ function fadeOutSegment(seg, callback) {
       if (callback) callback();
     } else {
       drawAll(seg.id);
-      ctx.globalAlpha = alpha; ctx.strokeStyle = seg.color; ctx.lineWidth = 6;
-      ctx.beginPath(); ctx.moveTo(seg.x1,seg.y1); ctx.lineTo(seg.x2,seg.y2); ctx.stroke();
+
+      ctx.globalAlpha = alpha;
+      ctx.strokeStyle = seg.color;
+      ctx.lineWidth = 6;
+
+      if (seg.type === "line") {
+        ctx.beginPath();
+        ctx.moveTo(seg.x1,seg.y1);
+        ctx.lineTo(seg.x2,seg.y2);
+        ctx.stroke();
+      } else if (seg.type === "arc") {
+        ctx.beginPath();
+        ctx.arc(seg.cx, seg.cy, seg.r, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+
       ctx.globalAlpha = 1;
       requestAnimationFrame(step);
     }
   };
+
   step();
 }
 
@@ -817,36 +937,62 @@ function undo() {
 }
 
 function resetAll() {
-  segments = []; history = []; nextId = 1; cpuThinking = false; savedMap = null;
-  drawing = false; startPoint = null; currentPoint = null;
+  segments = [];
+  history = [];
+  nextId = 1;
+  cpuThinking = false;
+  savedMap = null;
+
+  drawing = false;
+  startPoint = null;
+  currentPoint = null;
   draggingNodeKey = null;
+
   moveNodes = false;
   document.getElementById("modeMove").classList.remove("active");
 
   document.getElementById("endgamePanel").style.display = "none";
   canvas.style.pointerEvents = "auto";
-  mode = "draw"; currentPlayer = "red";
+
+  mode = "draw";
+  currentPlayer = "red";
+
   document.getElementById("modeDraw").classList.add("active");
   document.getElementById("modePlay").classList.remove("active");
-  updateStatus(); drawAll();
+
+  updateStatus();
+  drawAll();
 }
 
 function saveJSON() {
   const blob = new Blob([JSON.stringify(segments, null, 2)], {type:"application/json"});
   const url = URL.createObjectURL(blob);
-  const a = document.createElement("a"); a.href = url; a.download = "hackenbush.json"; a.click();
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "hackenbush.json";
+  a.click();
   URL.revokeObjectURL(url);
 }
 
 function loadJSON(e) {
-  const file = e.target.files[0]; if (!file) return;
+  const file = e.target.files[0];
+  if (!file) return;
+
   const reader = new FileReader();
   reader.onload = ev => {
     try {
       segments = JSON.parse(ev.target.result);
+
+      // compatibilità vecchi file (line senza type)
+      for (const s of segments) {
+        if (!s.type) s.type = "line";
+      }
+
       nextId = segments.length > 0 ? Math.max(...segments.map(s=>s.id))+1 : 1;
       drawAll();
-    } catch { updateStatus("JSON non valido"); }
+    } catch {
+      updateStatus("JSON non valido");
+    }
   };
   reader.readAsText(file);
 }
@@ -856,14 +1002,18 @@ function loadJSON(e) {
 document.getElementById("replayBtn").onclick = () => {
   document.getElementById("endgamePanel").style.display = "none";
   canvas.style.pointerEvents = "auto";
-  cpuThinking = false; currentPlayer = "red"; history = [];
+  cpuThinking = false;
+  currentPlayer = "red";
+  history = [];
 
   if (savedMap !== null) {
     segments = JSON.parse(JSON.stringify(savedMap));
+    for (const s of segments) if (!s.type) s.type = "line";
     nextId = segments.length > 0 ? Math.max(...segments.map(s=>s.id))+1 : 1;
   }
 
-  drawAll(); updateStatus();
+  drawAll();
+  updateStatus();
 };
 
 document.getElementById("saveMapBtn").onclick = saveJSON;
