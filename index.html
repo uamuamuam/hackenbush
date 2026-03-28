@@ -73,17 +73,19 @@ let savedMap = null;
 
 let moveNodes = false;
 let draggingNodeKey = null;
-let loopMode = false; // true when dragging out a loop from an existing node
 
-// ---- HELPER: unique node key ----
-// FIX: defined once globally (was accidentally duplicated before)
+let loopMode = false;
+
+// click vs drag
+let pointerDownPos = null;
+const CLICK_DRAG_THRESHOLD = 6;
+
+// loop gesture tracking
+let maxDragDist = 0;
+const LOOP_RETURN_THRESHOLD = 22;
+
+// ---- HELPERS ----
 function nodeKey(x, y) { return `${Math.round(x)}:${Math.round(y)}`; }
-
-// Arc semantics: node (nx,ny) lies ON the circumference.
-// Centre = (nx + dx*r, ny + dy*r) where (dx,dy) is a unit vector.
-function arcCenter(s) {
-  return { x: s.nx + s.dx * s.r, y: s.ny + s.dy * s.r };
-}
 
 document.getElementById("opponentSelect").onchange = e => { opponent = e.target.value; };
 
@@ -117,7 +119,6 @@ function setMode(m) {
   document.getElementById("modePlay").classList.toggle("active", mode === "play");
 
   if (mode === "play") {
-    // FIX: save map snapshot when entering play mode so Replay works correctly
     savedMap = JSON.parse(JSON.stringify(segments));
     currentPlayer = "red";
     cpuThinking = false;
@@ -134,7 +135,7 @@ function updateStatus(msg) {
   if (mode === "draw") {
     s.innerHTML = `Disegno | Colore: <b style="color:${currentColor}">${currentColor}</b>`
                 + (moveNodes ? " | <b>Sposta nodi ON</b>" : "")
-                + " | (drag andata+ritorno = loop)";
+                + " | (drag andata+ritorno = arco)";
   } else {
     s.innerHTML = `Turno: <b style="color:${currentPlayer}">${currentPlayer}</b>`;
   }
@@ -144,16 +145,90 @@ function updateStatus(msg) {
 function groundY() { return canvas.height - 30; }
 function groundY_int() { return Math.round(groundY()); }
 
+// =====================================================
+// ARC MATH (CORRETTO)
+// =====================================================
+function normAngle(a) {
+  while (a < 0) a += Math.PI * 2;
+  while (a >= Math.PI * 2) a -= Math.PI * 2;
+  return a;
+}
+
+function angleBetween(a, start, end, ccw) {
+  a = normAngle(a);
+  start = normAngle(start);
+  end = normAngle(end);
+
+  if (ccw) {
+    if (start <= end) return a >= start && a <= end;
+    return a >= start || a <= end;
+  } else {
+    if (end <= start) return a <= start && a >= end;
+    return a <= start || a >= end;
+  }
+}
+
+// costruisce arco tra A e B con curvatura h
+function makeArcFromAB(A, B, h) {
+  const mx = (A.x + B.x) / 2;
+  const my = (A.y + B.y) / 2;
+
+  const vx = B.x - A.x;
+  const vy = B.y - A.y;
+  const chordLen = Math.hypot(vx, vy);
+
+  if (chordLen < 1) return null;
+
+  const px = -vy / chordLen;
+  const py = vx / chordLen;
+
+  const cx = mx + px * h;
+  const cy = my + py * h;
+
+  const r = Math.hypot(A.x - cx, A.y - cy);
+
+  const a1 = Math.atan2(A.y - cy, A.x - cx);
+  const a2 = Math.atan2(B.y - cy, B.x - cx);
+
+  // verso fissato: volendo puoi renderlo dinamico
+  const ccw = true;
+
+  return { cx, cy, r, a1, a2, ccw };
+}
+
+// distanza punto-arco (collisione corretta)
+function distPointToArc(px, py, arc) {
+  const dx = px - arc.cx;
+  const dy = py - arc.cy;
+
+  const ang = Math.atan2(dy, dx);
+  const dCircle = Math.abs(Math.hypot(dx, dy) - arc.r);
+
+  if (!angleBetween(ang, arc.a1, arc.a2, arc.ccw)) {
+    const ex1 = arc.cx + Math.cos(arc.a1) * arc.r;
+    const ey1 = arc.cy + Math.sin(arc.a1) * arc.r;
+    const ex2 = arc.cx + Math.cos(arc.a2) * arc.r;
+    const ey2 = arc.cy + Math.sin(arc.a2) * arc.r;
+
+    return Math.min(
+      Math.hypot(px - ex1, py - ey1),
+      Math.hypot(px - ex2, py - ey2)
+    );
+  }
+
+  return dCircle;
+}
+
+// =====================================================
+
 function snapPoint(x, y) {
   x = Math.round(x / gridSize) * gridSize;
   y = Math.round(y / gridSize) * gridSize;
 
   for (const s of segments) {
-    if (s.type === "line") {
+    if (s.type === "line" || s.type === "arc") {
       if (Math.hypot(x - s.x1, y - s.y1) < 18) return { x: s.x1, y: s.y1 };
       if (Math.hypot(x - s.x2, y - s.y2) < 18) return { x: s.x2, y: s.y2 };
-    } else if (s.type === "arc") {
-      if (Math.hypot(x - s.nx, y - s.ny) < 18) return { x: s.nx, y: s.ny };
     }
   }
 
@@ -163,7 +238,6 @@ function snapPoint(x, y) {
 
 function getPointerPos(e) {
   const rect = canvas.getBoundingClientRect();
-  // FIX: support both mouse and touch events
   const src = e.touches ? e.touches[0] : e;
   return { x: src.clientX - rect.left, y: src.clientY - rect.top };
 }
@@ -178,10 +252,6 @@ function distPointToSegment(px, py, x1, y1, x2, y2) {
   return Math.sqrt((px-xx)**2 + (py-yy)**2);
 }
 
-function distPointToCircle(px, py, cx, cy, r) {
-  return Math.abs(Math.hypot(px - cx, py - cy) - r);
-}
-
 function findSegmentNear(x, y, threshold = 15) {
   let best = null, bestDist = threshold;
 
@@ -191,8 +261,7 @@ function findSegmentNear(x, y, threshold = 15) {
     if (s.type === "line") {
       d = distPointToSegment(x, y, s.x1, s.y1, s.x2, s.y2);
     } else if (s.type === "arc") {
-      const c = arcCenter(s);
-      d = distPointToCircle(x, y, c.x, c.y, s.r);
+      d = distPointToArc(x, y, s);
     }
 
     if (d < bestDist) {
@@ -227,9 +296,8 @@ function drawSegments(highlightId = null) {
       ctx.lineTo(s.x2, s.y2);
       ctx.stroke();
     } else if (s.type === "arc") {
-      const c = arcCenter(s);
       ctx.beginPath();
-      ctx.arc(c.x, c.y, s.r, 0, Math.PI * 2);
+      ctx.arc(s.cx, s.cy, s.r, s.a1, s.a2, s.ccw);
       ctx.stroke();
     }
   }
@@ -246,9 +314,8 @@ function drawSegments(highlightId = null) {
         ctx.lineTo(s.x2, s.y2);
         ctx.stroke();
       } else if (s.type === "arc") {
-        const c = arcCenter(s);
         ctx.beginPath();
-        ctx.arc(c.x, c.y, s.r, 0, Math.PI * 2);
+        ctx.arc(s.cx, s.cy, s.r, s.a1, s.a2, s.ccw);
         ctx.stroke();
       }
     }
@@ -260,16 +327,12 @@ function getJunctionNodes() {
   function key(x, y) { return `${Math.round(x)}:${Math.round(y)}`; }
 
   for (const s of segments) {
-    if (s.type === "line") {
+    if (s.type === "line" || s.type === "arc") {
       const k1 = key(s.x1,s.y1), k2 = key(s.x2,s.y2);
       count.set(k1, (count.get(k1)||0) + 1);
       count.set(k2, (count.get(k2)||0) + 1);
       pos.set(k1, {x:s.x1, y:s.y1});
       pos.set(k2, {x:s.x2, y:s.y2});
-    } else if (s.type === "arc") {
-      const k = key(s.nx,s.ny);
-      count.set(k, (count.get(k)||0) + 2);
-      pos.set(k, {x:s.nx, y:s.ny});
     }
   }
 
@@ -304,11 +367,9 @@ function drawAll(highlightId = null) {
 function allNodePositions() {
   const nodes = [];
   for (const s of segments) {
-    if (s.type === "line") {
+    if (s.type === "line" || s.type === "arc") {
       nodes.push({x:s.x1, y:s.y1});
       nodes.push({x:s.x2, y:s.y2});
-    } else if (s.type === "arc") {
-      nodes.push({x:s.nx, y:s.ny});
     }
   }
   return nodes;
@@ -340,22 +401,30 @@ function moveNode(oldX, oldY, newX, newY) {
         s.x2 = newX; s.y2 = newY;
       }
     } else if (s.type === "arc") {
-      if (Math.abs(s.nx - oldX) < 1 && Math.abs(s.ny - oldY) < 1) {
-        s.nx = newX;
-        s.ny = newY;
+      if (Math.abs(s.x1 - oldX) < 1 && Math.abs(s.y1 - oldY) < 1) {
+        s.x1 = newX; s.y1 = newY;
+      }
+      if (Math.abs(s.x2 - oldX) < 1 && Math.abs(s.y2 - oldY) < 1) {
+        s.x2 = newX; s.y2 = newY;
+      }
+
+      const rebuilt = makeArcFromAB(
+        {x:s.x1, y:s.y1},
+        {x:s.x2, y:s.y2},
+        s.h || 80
+      );
+
+      if (rebuilt) {
+        s.cx = rebuilt.cx; s.cy = rebuilt.cy;
+        s.r = rebuilt.r;
+        s.a1 = rebuilt.a1; s.a2 = rebuilt.a2;
+        s.ccw = rebuilt.ccw;
       }
     }
   }
 }
 
 // ---- Input ----
-let pointerDownPos = null;
-const CLICK_DRAG_THRESHOLD = 6; // pixels
-
-// Loop gesture: drag away from a node and return near it.
-// maxDragDist tracks the furthest distance reached during the current drag.
-let maxDragDist = 0;
-const LOOP_RETURN_THRESHOLD = 22; // px — how close to origin to trigger loop on release
 
 canvas.addEventListener("pointerdown", e => {
   if (cpuThinking) return;
@@ -411,16 +480,11 @@ canvas.addEventListener("pointermove", e => {
   currentPoint = snapPoint(pos.x, pos.y);
 
   const distFromOrigin = Math.hypot(currentPoint.x - startPoint.x, currentPoint.y - startPoint.y);
-
-  // Track the maximum excursion from the start point during this drag
   if (distFromOrigin > maxDragDist) maxDragDist = distFromOrigin;
 
-  // Switch to loop preview once the user has dragged far enough and returned close to origin.
-  // loopMode latches ON once triggered; a subsequent move away keeps it on.
   if (maxDragDist >= 20 && distFromOrigin < LOOP_RETURN_THRESHOLD) {
     loopMode = true;
   }
-  // Allow cancelling back to line if the user drags away again while still holding
   if (distFromOrigin > LOOP_RETURN_THRESHOLD * 1.8) {
     loopMode = false;
   }
@@ -432,28 +496,29 @@ canvas.addEventListener("pointermove", e => {
   ctx.setLineDash([6, 6]);
 
   if (loopMode) {
-    // Circle preview: node lies ON the circle, centre offset in drag direction
-    const rawDx = currentPoint.x - startPoint.x;
-    const rawDy = currentPoint.y - startPoint.y;
-    const len = Math.hypot(rawDx, rawDy) || 1;
-    const cx = startPoint.x + (rawDx / len) * maxDragDist;
-    const cy = startPoint.y + (rawDy / len) * maxDragDist;
-    ctx.beginPath();
-    ctx.arc(cx, cy, maxDragDist, 0, Math.PI * 2);
-    ctx.stroke();
-    // Radial handle line from node to centre
-    ctx.beginPath();
-    ctx.moveTo(startPoint.x, startPoint.y);
-    ctx.lineTo(cx, cy);
-    ctx.stroke();
-    // Dot on the node
-    ctx.setLineDash([]);
-    ctx.beginPath();
-    ctx.arc(startPoint.x, startPoint.y, 5, 0, Math.PI * 2);
-    ctx.fillStyle = currentColor;
-    ctx.fill();
+    const A = startPoint;
+    const B = currentPoint;
+
+    const h = Math.min(maxDragDist * 0.6, 220);
+    const arc = makeArcFromAB(A, B, h);
+
+    if (arc) {
+      ctx.beginPath();
+      ctx.arc(arc.cx, arc.cy, arc.r, arc.a1, arc.a2, arc.ccw);
+      ctx.stroke();
+
+      ctx.setLineDash([]);
+      ctx.fillStyle = currentColor;
+
+      ctx.beginPath();
+      ctx.arc(A.x, A.y, 5, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.beginPath();
+      ctx.arc(B.x, B.y, 5, 0, Math.PI * 2);
+      ctx.fill();
+    }
   } else {
-    // Normal line preview
     ctx.beginPath();
     ctx.moveTo(startPoint.x, startPoint.y);
     ctx.lineTo(currentPoint.x, currentPoint.y);
@@ -496,27 +561,29 @@ canvas.addEventListener("pointerup", e => {
   drawing = false;
   if (!startPoint || !currentPoint) return;
 
-  const distFromOrigin = Math.hypot(currentPoint.x - startPoint.x, currentPoint.y - startPoint.y);
-
-  // Decide final shape:
-  // - loopMode=true → circle (center=startPoint, radius=maxDragDist)
-  // - otherwise → straight line (only if long enough)
   if (loopMode && maxDragDist >= 14) {
     saveHistory();
-    // Compute unit vector from node toward cursor (centre direction)
-    const rawDx = currentPoint.x - startPoint.x;
-    const rawDy = currentPoint.y - startPoint.y;
-    const len = Math.hypot(rawDx, rawDy) || 1;
-    segments.push({
-      id: nextId++,
-      type: "arc",
-      nx: startPoint.x,   // node on the circumference
-      ny: startPoint.y,
-      dx: rawDx / len,    // unit vector node→centre
-      dy: rawDy / len,
-      r: maxDragDist,
-      color: currentColor
-    });
+
+    const A = startPoint;
+    const B = currentPoint;
+
+    const h = Math.min(maxDragDist * 0.6, 220);
+    const arc = makeArcFromAB(A, B, h);
+
+    if (arc) {
+      segments.push({
+        id: nextId++,
+        type: "arc",
+        x1: A.x, y1: A.y,
+        x2: B.x, y2: B.y,
+        cx: arc.cx, cy: arc.cy,
+        r: arc.r,
+        a1: arc.a1, a2: arc.a2,
+        ccw: arc.ccw,
+        h: h,
+        color: currentColor
+      });
+    }
   } else if (!loopMode && maxDragDist >= 10) {
     saveHistory();
     segments.push({
@@ -542,7 +609,6 @@ function movesAvailable(player) { return segments.some(s => canCut(s, player)); 
 // ---- Turni ----
 
 function playerMove(id) {
-  // FIX: save history with currentPlayer snapshot so undo restores turn correctly
   saveHistory();
   fadeOutSegment(segments.find(s => s.id === id), () => {
     switchTurn();
@@ -616,13 +682,10 @@ function buildCompactPosition(segs) {
   }
 
   for (const s of segs) {
-    if (s.type === "line") {
+    if (s.type === "line" || s.type === "arc") {
       const a = getNodeId(s.x1, s.y1);
       const b = getNodeId(s.x2, s.y2);
       edges.push({a, b, color: s.color, id: s.id});
-    } else if (s.type === "arc") {
-      const a = getNodeId(s.nx, s.ny);
-      edges.push({a, b: a, color: s.color, id: s.id});
     }
   }
 
@@ -630,7 +693,7 @@ function buildCompactPosition(segs) {
   for (let ei = 0; ei < edges.length; ei++) {
     const e = edges[ei];
     adj[e.a].push(ei);
-    if (e.b !== e.a) adj[e.b].push(ei); // FIX: don't double-push self-loops (arcs)
+    if (e.b !== e.a) adj[e.b].push(ei);
   }
 
   const groundNodes = [];
@@ -657,7 +720,6 @@ function reachableNodesFromGround(pos, aliveEdges) {
     for (const ei of adj[n]) {
       if (!aliveEdges[ei]) continue;
       const e = edges[ei];
-      // FIX: for self-loops (arcs), both endpoints are the same node — skip to avoid infinite loop
       if (e.a === e.b) continue;
       const to = (e.a === n) ? e.b : e.a;
       if (!reachable[to]) {
@@ -677,12 +739,7 @@ function pruneDisconnectedEdges(pos, aliveEdges) {
   for (let ei = 0; ei < edges.length; ei++) {
     if (!aliveEdges[ei]) continue;
     const e = edges[ei];
-    // FIX: for arcs (self-loops), only node e.a needs to be reachable
-    if (e.a === e.b) {
-      if (!reachable[e.a]) aliveEdges[ei] = 0;
-    } else {
-      if (!reachable[e.a] || !reachable[e.b]) aliveEdges[ei] = 0;
-    }
+    if (!reachable[e.a] || !reachable[e.b]) aliveEdges[ei] = 0;
   }
 }
 
@@ -704,8 +761,6 @@ function applyMoveFast(pos, aliveEdges, moveEi) {
   pruneDisconnectedEdges(pos, aliveEdges);
 }
 
-// FIX: rolloutPickMoveFast now accepts `player` and uses it for evaluation context
-// Previously it always scored moves the same way regardless of which player was moving.
 function rolloutPickMoveFast(pos, aliveEdges, player) {
   const moves = legalMovesIndices(pos, aliveEdges, player);
   if (!moves.length) return -1;
@@ -728,8 +783,6 @@ function rolloutPickMoveFast(pos, aliveEdges, player) {
 
     const dropped = aliveCount - afterCount;
 
-    // FIX: for a partizan game, "blue" wants to maximise drops (greedy aggression),
-    // "red" wants to minimise drops (conservative). Apply perspective here during rollouts.
     const score = (player === "blue" ? dropped : -dropped) + Math.random() * 0.2;
 
     if (score > bestScore) {
@@ -747,7 +800,6 @@ function terminalWinnerFast(pos, aliveEdges, playerToMove) {
   return null;
 }
 
-// FIX: simulatePlayoutFast now correctly alternates player perspective in rolloutPickMoveFast
 function simulatePlayoutFast(pos, aliveEdgesStart, startPlayer) {
   let aliveEdges = new Uint8Array(aliveEdgesStart);
   let player = startPlayer;
@@ -802,7 +854,6 @@ function mctsBestMove(simulations = 600) {
     const alive = new Uint8Array(alive0);
     applyMoveFast(pos, alive, chosenEi);
 
-    // FIX: rollout starts from "red" because blue just moved
     const winner = simulatePlayoutFast(pos, alive, "red");
 
     plays[chosenEi]++;
@@ -830,17 +881,12 @@ function mctsBestMove(simulations = 600) {
 function buildAdj(segs) {
   const adj = new Map();
   for (const s of segs) {
-    if (s.type === "line") {
+    if (s.type === "line" || s.type === "arc") {
       const a = nodeKey(s.x1,s.y1), b = nodeKey(s.x2,s.y2);
       if (!adj.has(a)) adj.set(a, []);
       if (!adj.has(b)) adj.set(b, []);
       adj.get(a).push({to:b, id:s.id});
       adj.get(b).push({to:a, id:s.id});
-    } else if (s.type === "arc") {
-      const a = nodeKey(s.nx,s.ny);
-      if (!adj.has(a)) adj.set(a, []);
-      // FIX: self-loops push once with a sentinel to avoid double-counting
-      adj.get(a).push({to:"__loop__", id:s.id});
     }
   }
   return adj;
@@ -849,11 +895,9 @@ function buildAdj(segs) {
 function getGroundSet(segs) {
   const gy = groundY_int(), g = new Set();
   for (const s of segs) {
-    if (s.type === "line") {
+    if (s.type === "line" || s.type === "arc") {
       if (Math.abs(Math.round(s.y1)-gy) < 2) g.add(nodeKey(s.x1,s.y1));
       if (Math.abs(Math.round(s.y2)-gy) < 2) g.add(nodeKey(s.x2,s.y2));
-    } else if (s.type === "arc") {
-      if (Math.abs(Math.round(s.ny)-gy) < 2) g.add(nodeKey(s.nx,s.ny));
     }
   }
   return g;
@@ -867,8 +911,6 @@ function reachableFrom(groundSet, adj) {
   while (qi < queue.length) {
     const n = queue[qi++];
     for (const {to} of (adj.get(n)||[])) {
-      // FIX: skip loop sentinels
-      if (to === "__loop__") continue;
       if (!visited.has(to)) {
         visited.add(to);
         queue.push(to);
@@ -878,6 +920,7 @@ function reachableFrom(groundSet, adj) {
   return visited;
 }
 
+// SG SOLO SU ALBERI (semplificato)
 function computeNimValue(segs) {
   if (!segs.length) return 0;
   const adj = buildAdj(segs);
@@ -886,71 +929,37 @@ function computeNimValue(segs) {
   const reachable = reachableFrom(groundSet, adj);
 
   const visited = new Set();
-  const childrenOf = new Map();
+  const parent = new Map();
+  const order = [];
 
-  // FIX: Count back-edges carefully:
-  // - Self-loops (arcs) each contribute exactly 1 cycle (not 2), so track them separately
-  let treeBackEdges = 0;
-  let selfLoopCount = 0;
-
-  const stack = [];
-  for (const g of groundSet) {
-    if (reachable.has(g) && !visited.has(g)) {
-      visited.add(g);
-      childrenOf.set(g, []);
-      for (const {to, id} of (adj.get(g)||[])) {
-        if (to === "__loop__") { selfLoopCount++; continue; }
-        if (reachable.has(to)) stack.push({node: to, par: g, eid: id});
-      }
-    }
-  }
+  const stack = [...groundSet].filter(g => reachable.has(g));
+  for (const g of stack) parent.set(g, null);
 
   while (stack.length) {
-    const {node, par, eid} = stack.pop();
-    if (visited.has(node)) {
-      treeBackEdges++;
-      continue;
-    }
-    visited.add(node);
-    if (!childrenOf.has(par)) childrenOf.set(par, []);
-    childrenOf.get(par).push(node);
-    childrenOf.set(node, []);
-    for (const {to, id} of (adj.get(node)||[])) {
-      if (to === "__loop__") { selfLoopCount++; continue; }
+    const n = stack.pop();
+    if (visited.has(n)) continue;
+    visited.add(n);
+    order.push(n);
+
+    for (const {to} of (adj.get(n)||[])) {
       if (!reachable.has(to)) continue;
-      if (id === eid) continue;
-      stack.push({node: to, par: node, eid: id});
-    }
-  }
-
-  // FIX: self-loops are single-edge cycles; back-edges are undirected so halve them
-  const cycles = Math.floor(treeBackEdges / 2) + selfLoopCount;
-
-  const bfsOrder = [];
-  const bfsQ = [...groundSet].filter(g => visited.has(g));
-  let bi = 0;
-
-  const bfsSeen = new Set(bfsQ);
-  bfsOrder.push(...bfsQ);
-
-  while (bi < bfsQ.length) {
-    const n = bfsQ[bi++];
-    for (const c of (childrenOf.get(n)||[])) {
-      if (!bfsSeen.has(c)) {
-        bfsSeen.add(c);
-        bfsQ.push(c);
-        bfsOrder.push(c);
-      }
+      if (to === parent.get(n)) continue;
+      parent.set(to, n);
+      stack.push(to);
     }
   }
 
   const grundy = new Map();
-  for (let i = bfsOrder.length - 1; i >= 0; i--) {
-    const n = bfsOrder[i];
+  for (let i = order.length - 1; i >= 0; i--) {
+    const n = order[i];
     let xor = 0;
-    for (const c of (childrenOf.get(n)||[])) {
-      xor ^= ((grundy.get(c) || 0) + 1);
+
+    for (const {to} of (adj.get(n)||[])) {
+      if (!reachable.has(to)) continue;
+      if (to === parent.get(n)) continue;
+      xor ^= ((grundy.get(to) || 0) + 1);
     }
+
     grundy.set(n, xor);
   }
 
@@ -958,7 +967,7 @@ function computeNimValue(segs) {
   for (const g of groundSet) {
     if (visited.has(g)) nim ^= (grundy.get(g) || 0);
   }
-  nim ^= (cycles & 1);
+
   return nim;
 }
 
@@ -969,28 +978,24 @@ function simulateRemove(segs, removeId) {
   const reachable = reachableFrom(groundSet, adj);
 
   return after.filter(s => {
-    if (s.type === "line") {
-      return reachable.has(nodeKey(s.x1,s.y1)) && reachable.has(nodeKey(s.x2,s.y2));
-    } else {
-      return reachable.has(nodeKey(s.nx,s.ny));
-    }
+    return reachable.has(nodeKey(s.x1,s.y1)) && reachable.has(nodeKey(s.x2,s.y2));
   });
 }
 
-// FIX: warn at runtime if SG is used on a non-all-green graph
 function sgBestMove() {
   const hasNonGreen = segments.some(s => s.color !== "green");
   if (hasNonGreen) {
-    console.warn("SG CPU: Sprague-Grundy è valido solo per grafi interamente verdi. " +
-                 "Risultati potrebbero essere errati con segmenti rossi/blu.");
+    console.warn("SG CPU: valido solo per grafi verdi!");
     updateStatus("⚠️ SG CPU: valido solo con grafo verde!");
   }
 
   const movable = segments.filter(s => canCut(s, "blue"));
   if (!movable.length) return null;
+
   for (const s of movable) {
     if (computeNimValue(simulateRemove(segments, s.id)) === 0) return s;
   }
+
   return movable[Math.floor(Math.random() * movable.length)];
 }
 
@@ -1002,11 +1007,7 @@ function removeDisconnected() {
   const reachable = reachableFrom(groundSet, adj);
 
   segments = segments.filter(s => {
-    if (s.type === "line") {
-      return reachable.has(nodeKey(s.x1,s.y1)) && reachable.has(nodeKey(s.x2,s.y2));
-    } else {
-      return reachable.has(nodeKey(s.nx,s.ny));
-    }
+    return reachable.has(nodeKey(s.x1,s.y1)) && reachable.has(nodeKey(s.x2,s.y2));
   });
 }
 
@@ -1038,9 +1039,8 @@ function fadeOutSegment(seg, callback) {
         ctx.lineTo(seg.x2,seg.y2);
         ctx.stroke();
       } else if (seg.type === "arc") {
-        const c = arcCenter(seg);
         ctx.beginPath();
-        ctx.arc(c.x, c.y, seg.r, 0, Math.PI * 2);
+        ctx.arc(seg.cx, seg.cy, seg.r, seg.a1, seg.a2, seg.ccw);
         ctx.stroke();
       }
 
@@ -1054,7 +1054,6 @@ function fadeOutSegment(seg, callback) {
 
 // ---- Undo / Reset / Save / Load ----
 
-// FIX: history now also stores currentPlayer so undo correctly restores turn
 function saveHistory() {
   history.push(JSON.stringify({segments, currentPlayer}));
   if (history.length > 50) history.shift();
@@ -1064,10 +1063,7 @@ function undo() {
   if (!history.length) return;
   const snap = JSON.parse(history.pop());
   segments = snap.segments;
-  // Restore player turn only in play mode (draw mode has no turn concept)
-  if (mode === "play" && snap.currentPlayer) {
-    currentPlayer = snap.currentPlayer;
-  }
+  if (mode === "play" && snap.currentPlayer) currentPlayer = snap.currentPlayer;
   drawAll();
   updateStatus();
 }
@@ -1122,14 +1118,19 @@ function loadJSON(e) {
     try {
       segments = JSON.parse(ev.target.result);
 
-      // compatibilità vecchi file
+      // compatibilità vecchi file: converte vecchi archi "cerchio"
       for (const s of segments) {
         if (!s.type) s.type = "line";
-        // migrate old arc format (cx,cy = centre) to new (nx,ny = node on circle)
-        if (s.type === "arc" && s.cx !== undefined && s.nx === undefined) {
-          s.nx = s.cx; s.ny = s.cy;
-          s.dx = 0; s.dy = -1; // default: centre above node
-          delete s.cx; delete s.cy;
+
+        // se vecchio arco (nx,ny,dx,dy,r) lo trasformiamo in linea
+        // (non c'è abbastanza info per recuperare arco vero)
+        if (s.type === "arc" && s.nx !== undefined) {
+          s.type = "line";
+          s.x1 = s.nx; s.y1 = s.ny;
+          s.x2 = s.nx + 40; s.y2 = s.ny;
+          delete s.nx; delete s.ny;
+          delete s.dx; delete s.dy;
+          delete s.r;
         }
       }
 
@@ -1153,13 +1154,6 @@ document.getElementById("replayBtn").onclick = () => {
 
   if (savedMap !== null) {
     segments = JSON.parse(JSON.stringify(savedMap));
-    for (const s of segments) {
-      if (!s.type) s.type = "line";
-      if (s.type === "arc" && s.cx !== undefined && s.nx === undefined) {
-        s.nx = s.cx; s.ny = s.cy; s.dx = 0; s.dy = -1;
-        delete s.cx; delete s.cy;
-      }
-    }
     nextId = segments.length > 0 ? Math.max(...segments.map(s=>s.id))+1 : 1;
   }
 
